@@ -20,6 +20,8 @@ V1 is analysis-only. It never authenticates with Bybit and cannot place orders.
 - Exposes `/health`, `/ready`, and interactive API docs at `/docs`.
 
 See [docs/V1_STRATEGY.md](docs/V1_STRATEGY.md) for the complete strategy contract.
+See [docs/SIGNAL_DIAGNOSTICS.md](docs/SIGNAL_DIAGNOSTICS.md) for exact-time CVD diagnostics,
+immutable signal snapshots, historical audits, and automatic 15/30/60/120-minute outcomes.
 
 ## Local setup
 
@@ -42,6 +44,9 @@ uvicorn btc_monitor.main:app --reload
 Open `http://localhost:8000/health`. During a fresh installation, `status` remains
 `WARMING_UP` until both markets have accumulated enough one-minute CVD bars. This is
 intentional: historical candles may be backfilled, but CVD is never fabricated.
+After upgrading, restart the process. Historical minute rows without recorded completeness
+do not count toward fresh continuous warmup. Use `/signals` to find signal IDs, then
+`/signals/{id}/debug` and `/signals/{id}/outcomes` to inspect diagnostics and results.
 
 Run tests:
 

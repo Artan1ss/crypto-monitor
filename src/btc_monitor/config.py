@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     heartbeat_seconds: float = Field(20, gt=0)
     ws_stale_seconds: float = Field(30, gt=0)
     ws_alert_seconds: float = Field(60, gt=0)
+    tracking_fee_bps_per_side: float = Field(0, ge=0)
+    tracking_slippage_bps_per_side: float = Field(0, ge=0)
 
     @field_validator("database_url")
     @classmethod

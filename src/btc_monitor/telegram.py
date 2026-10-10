@@ -22,7 +22,11 @@ def _pct(value: Decimal | None, digits: int = 2) -> str:
 def render_signal(signal: Signal) -> str:
     direction_icon = "🟢" if signal.direction.value == "LONG" else "🔴"
     spot = "Bullish" if signal.direction.value == "LONG" else "Bearish"
-    time = signal.timestamp.astimezone(TORONTO).strftime("%Y-%m-%d %H:%M %Z")
+    from datetime import timedelta
+
+    generated = signal.generated_at or signal.timestamp + timedelta(minutes=5)
+    time = generated.astimezone(TORONTO).strftime("%Y-%m-%d %H:%M:%S %Z")
+    candle_time = signal.timestamp.astimezone(TORONTO).strftime("%H:%M")
     reasons = "\n".join(f"• {html.escape(reason)}" for reason in signal.reasons)
     warnings = "\n".join(f"⚠️ {html.escape(item)}" for item in signal.warnings)
     warning_section = f"\n\n{warnings}" if warnings else ""
@@ -39,7 +43,7 @@ def render_signal(signal: Signal) -> str:
         f"{direction_icon} <b>{signal.symbol} {signal.direction.value} — "
         f"{signal.strength.value}</b>\n\n"
         f"<b>Score:</b> {signal.score} / 8\n<b>Price:</b> {_money(signal.entry_reference)}\n"
-        f"<b>Time:</b> {time}\n\n<b>SETUP</b>\n"
+        f"<b>Generated:</b> {time}\n<b>5m candle start:</b> {candle_time}\n\n<b>SETUP</b>\n"
         f"{setup_side} liquidity sweep + reclaim\n\n"
         f"<b>CVD</b>\nSpot: {spot} divergence {'✅' if signal.spot_cvd_divergence else '—'} "
         f"({signal.spot_cvd_strength:+.2f})\nFutures: {spot} divergence "

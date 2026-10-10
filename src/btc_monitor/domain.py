@@ -40,6 +40,7 @@ class Trade:
     side: str
     price: Decimal
     quantity: Decimal
+    trade_id: str | None = None
 
     @property
     def notional(self) -> Decimal:
@@ -60,6 +61,7 @@ class FlowBar:
     delta_notional: Decimal = ZERO
     cumulative_cvd: Decimal = ZERO
     trade_count: int = 0
+    is_complete: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -133,6 +135,8 @@ class Signal:
     warnings: list[str] = field(default_factory=list)
     strategy_version: str = "v1"
     signal_id: UUID = field(default_factory=uuid4)
+    generated_at: datetime | None = None
+    debug_snapshot: dict[str, Any] = field(default_factory=dict)
 
     def feature_payload(self) -> dict[str, Any]:
         return {

@@ -51,6 +51,12 @@ below. Strength is normalized by median absolute five-minute delta over about 20
 
 `strength = favorable CVD difference / median(abs(delta_5m))`
 
+Event-time implementation details and aggregate capture-quality requirements are in
+[SIGNAL_DIAGNOSTICS.md](SIGNAL_DIAGNOSTICS.md). Reference and current CVD use their
+respective 5m candle closes, the baseline excludes the signal candle, and comparisons
+with missing/partial minutes are not eligible. These are data-correctness requirements;
+the scoring weights and threshold below are unchanged.
+
 Strength 0.5 is valid and 1.0 is strong. Spot and futures are evaluated separately. At least
 one must be valid. Spot earns 2.0 score points and futures 1.5.
 
@@ -85,6 +91,7 @@ STRONG. The mandatory CVD condition cannot be bypassed by score.
 Entry reference is the confirmation close. Invalidation uses the sweep extreme plus a
 buffer of `max(0.20 × ATR14, entry × 0.0005)`. TP1, TP2, and TP3 are 1R, 2R, and 3R.
 The nearest confirmed opposing pivot is shown separately as a structure target.
+Already breached opposing pivots are excluded from that display target.
 
 Signals are unique by direction, reference timestamp, and reference price. An in-memory
 consumed set prevents repeats during a run, the database uniqueness constraint protects

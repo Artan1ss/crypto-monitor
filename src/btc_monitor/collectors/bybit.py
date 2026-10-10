@@ -113,7 +113,11 @@ def parse_trades(message: dict, market: Market) -> list[Trade]:
     trades: list[Trade] = []
     for item in message.get("data", []):
         timestamp = datetime.fromtimestamp(int(item["T"]) / 1000, tz=UTC)
-        trades.append(Trade(market, timestamp, item["S"], Decimal(item["p"]), Decimal(item["v"])))
+        trades.append(
+            Trade(
+                market, timestamp, item["S"], Decimal(item["p"]), Decimal(item["v"]), item.get("i")
+            )
+        )
     return trades
 
 

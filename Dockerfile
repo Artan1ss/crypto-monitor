@@ -6,4 +6,4 @@ COPY src ./src
 COPY alembic.ini ./
 COPY migrations ./migrations
 RUN pip install --no-cache-dir .
-CMD ["sh", "-c", "alembic upgrade head && uvicorn btc_monitor.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn btc_monitor.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

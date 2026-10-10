@@ -85,6 +85,12 @@ class SignalEngine:
         if trend_aligned:
             score += Decimal("0.5")
             reasons.append("1H trend aligned")
+        elif htf_trend in {"BULLISH", "BEARISH"}:
+            warnings.append(f"Countertrend setup: 1H is {htf_trend}")
+        if not context.spot_divergence.valid:
+            warnings.append("Spot CVD divergence is not confirmed")
+        if not context.futures_divergence.valid:
+            warnings.append("Futures CVD divergence is not confirmed")
 
         if score < Decimal(str(self.settings.signal_min_score)):
             return None
@@ -133,6 +139,29 @@ class SignalEngine:
             orderbook_imbalance=context.orderbook_imbalance,
             reasons=reasons,
             warnings=warnings,
+            debug_snapshot={
+                "score_breakdown": {
+                    "sweep": "2.0",
+                    "spot_divergence": "2.0" if context.spot_divergence.valid else "0",
+                    "futures_divergence": "1.5" if context.futures_divergence.valid else "0",
+                    "oi": str(oi_score),
+                    "funding": str(funding_score),
+                    "volume": "0.5"
+                    if volume_ratio is not None
+                    and volume_ratio >= Decimal(str(self.settings.volume_multiplier))
+                    else "0",
+                    "trend": "0.5" if trend_aligned else "0",
+                    "total": str(score),
+                },
+                "risk": {
+                    "buffer": str(buffer),
+                    "risk_usdt": str(risk),
+                    "structure_distance_r": str(abs(structure_target - entry) / risk)
+                    if structure_target is not None and risk
+                    else None,
+                    "structure_is_display_only": True,
+                },
+            },
         )
 
     @staticmethod

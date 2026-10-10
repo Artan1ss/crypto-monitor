@@ -26,6 +26,7 @@ class MarketFlow1m(Base):
     cumulative_cvd: Mapped[Decimal] = mapped_column(Numeric(34, 8), nullable=False)
     trade_count: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_complete: Mapped[bool | None] = mapped_column(Boolean)
 
 
 class Candle5m(Base):
@@ -84,6 +85,7 @@ class SignalRecord(Base):
         Index("ix_signals_signal_time", "signal_time"),
         Index("ix_signals_direction", "direction"),
         Index("ix_signals_reference_timestamp", "reference_timestamp"),
+        Index("ix_signals_tracking_complete", "tracking_complete"),
         UniqueConstraint("direction", "reference_timestamp", "reference_price"),
     )
 
@@ -107,3 +109,9 @@ class SignalRecord(Base):
     features: Mapped[dict] = mapped_column(JSONB, nullable=False)
     telegram_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     telegram_message_id: Mapped[str | None] = mapped_column(String(64))
+    telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    debug_snapshot: Mapped[dict | None] = mapped_column(JSONB)
+    outcomes: Mapped[dict | None] = mapped_column(JSONB)
+    tracking_complete: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )

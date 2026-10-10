@@ -16,6 +16,7 @@ dependencies = [
   "pydantic-settings>=2.7,<3",
   "sqlalchemy[asyncio]>=2.0.36,<3",
   "structlog>=24.4,<26",
+  "tzdata>=2025.1",
   "uvicorn[standard]>=0.34,<1",
   "websockets>=14,<16",
 ]
