@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from btc_monitor import models  # noqa: F401
@@ -37,7 +37,10 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section), prefix="sqlalchemy.", poolclass=pool.NullPool
     )
     async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        # Overlapping deploys must not concurrently create the initial schema.
+        async with connection.begin():
+            await connection.execute(text("SELECT pg_advisory_xact_lock(724196305)"))
+            await connection.run_sync(do_run_migrations)
     await connectable.dispose()
 
 

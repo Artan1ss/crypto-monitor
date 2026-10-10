@@ -6,6 +6,8 @@ import structlog
 
 def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(stream=sys.stdout, level=level.upper(), format="%(message)s")
+    # HTTPX request URLs include Telegram bot credentials; never log them.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

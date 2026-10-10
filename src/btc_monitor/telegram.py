@@ -74,19 +74,25 @@ class TelegramClient:
     async def send(self, text: str) -> str | None:
         if not self.enabled:
             return None
-        response = await self.client.post(
-            f"https://api.telegram.org/bot{self.token}/sendMessage",
-            json={
-                "chat_id": self.chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-        )
-        response.raise_for_status()
+        try:
+            response = await self.client.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                json={
+                    "chat_id": self.chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            raise RuntimeError(
+                f"Telegram request failed ({type(exc).__name__}, status={status})"
+            ) from None
         payload = response.json()
         if not payload.get("ok"):
-            raise RuntimeError(f"Telegram rejected message: {payload}")
+            raise RuntimeError(f"Telegram rejected message (code={payload.get('error_code')})")
         return str(payload["result"]["message_id"])
 
     async def close(self) -> None:

@@ -77,7 +77,14 @@ No secret is committed. If Telegram is disabled, signals are still calculated an
 6. Keep Serverless/App Sleeping disabled because the service maintains WebSockets 24/7.
 7. Verify `/health`, application logs, and that both streams become connected.
 
-`railway.json` configures the `/health` deployment health check and restart policy. Railway's
+For new Railway services, explicitly select Dockerfile in Settings and set the start command,
+`/health` healthcheck (300 seconds), and On Failure restart policy (10 retries). Do not rely
+on `railway.json` being activated: Railway's current console restricts Config as Code to
+legacy services. Keep exactly one replica and Serverless disabled. The Dockerfile command
+already migrates the database before starting the application.
+
+The unauthenticated signal/debug APIs should remain on private networking unless you
+intentionally want their market diagnostics publicly readable. Railway's
 deployment check is not continuous monitoring; the runtime also tracks stream staleness,
 reconnects, and one-time outage/recovery notifications.
 
