@@ -6,6 +6,8 @@ from uuid import UUID
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Response, status
 
+from btc_monitor.archive.service import ResearchCollector
+from btc_monitor.archive.store import ArchiveStore
 from btc_monitor.config import get_settings
 from btc_monitor.db import Database
 from btc_monitor.logging import configure_logging
@@ -17,16 +19,24 @@ configure_logging(settings.log_level)
 database = Database(settings.database_url)
 repository = Repository(database)
 runtime = MonitorRuntime(settings, repository)
+archive_store = ArchiveStore(database)
+archive_runtime = ResearchCollector(settings, archive_store)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await runtime.start()
+    await archive_runtime.start()
     try:
         yield
     finally:
-        await runtime.stop()
-        await database.close()
+        try:
+            await archive_runtime.stop()
+        finally:
+            try:
+                await runtime.stop()
+            finally:
+                await database.close()
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -92,6 +102,16 @@ async def signals(limit: int = Query(20, ge=1, le=100)) -> list[dict]:
         }
         for r in rows
     ]
+
+
+@app.get("/archive/health")
+async def archive_health() -> dict:
+    return archive_runtime.health()
+
+
+@app.get("/archive/coverage")
+async def archive_coverage() -> list[dict]:
+    return await archive_store.summary()
 
 
 def run() -> None:

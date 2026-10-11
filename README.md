@@ -22,6 +22,11 @@ V1 is analysis-only. It never authenticates with Bybit and cannot place orders.
 See [docs/V1_STRATEGY.md](docs/V1_STRATEGY.md) for the complete strategy contract.
 See [docs/SIGNAL_DIAGNOSTICS.md](docs/SIGNAL_DIAGNOSTICS.md) for exact-time CVD diagnostics,
 immutable signal snapshots, historical audits, and automatic 15/30/60/120-minute outcomes.
+See [docs/MARKET_ARCHIVE.md](docs/MARKET_ARCHIVE.md) for the opt-in multi-exchange
+research archive, public connectivity checks, historical backfill, and causal feature replay.
+This separate data layer does not change V1 strategy parameters or send squeeze alerts.
+The optional [Coinalyze integration](docs/COINALYZE.md) adds independently tagged
+historical flow, OI, funding and liquidation evidence using a locally stored API key.
 
 ## Local setup
 

@@ -31,6 +31,7 @@ dev = [
 
 [project.scripts]
 btc-monitor = "btc_monitor.main:run"
+btc-archive = "btc_monitor.archive.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/btc_monitor"]

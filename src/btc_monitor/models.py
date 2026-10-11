@@ -4,12 +4,48 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, Index, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from btc_monitor.db import Base
+
+
+class MarketObservation(Base):
+    """Append-only research archive. Never participates in V1 signal evaluation."""
+
+    __tablename__ = "market_observations"
+    __table_args__ = (
+        UniqueConstraint("fingerprint"),
+        Index("ix_observation_series_time", "venue", "market", "dataset", "event_time"),
+        Index("ix_observation_available", "available_at", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    venue: Mapped[str] = mapped_column(String(24), nullable=False)
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    instrument: Mapped[str] = mapped_column(String(48), nullable=False)
+    dataset: Mapped[str] = mapped_column(String(24), nullable=False)
+    interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    quality: Mapped[str] = mapped_column(String(16), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
 class MarketFlow1m(Base):

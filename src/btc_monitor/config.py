@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -50,6 +50,50 @@ class Settings(BaseSettings):
     tracking_fee_bps_per_side: float = Field(0, ge=0)
     tracking_slippage_bps_per_side: float = Field(0, ge=0)
 
+    # Research collection is opt-in and does not change V1's Bybit inputs.
+    archive_enabled: bool = False
+    archive_venues: tuple[str, ...] = ("bybit", "binance", "okx", "coinbase")
+    archive_grace_seconds: int = Field(10, ge=1, le=60)
+    archive_poll_seconds: int = Field(60, ge=30)
+    archive_queue_size: int = Field(5000, ge=100, le=50000)
+    binance_spot_rest_url: str = "https://api.binance.com"
+    binance_linear_rest_url: str = "https://fapi.binance.com"
+    binance_spot_ws_url: str = "wss://stream.binance.com:9443/ws"
+    binance_linear_ws_url: str = "wss://fstream.binance.com/market/ws"
+    okx_rest_url: str = "https://openapi.okx.com"
+    okx_public_ws_url: str = "wss://ws.okx.com:8443/ws/v5/public"
+    coinbase_rest_url: str = "https://api.exchange.coinbase.com"
+    coinbase_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
+
+    coinalyze_enabled: bool = False
+    coinalyze_api_key: SecretStr | None = Field(None, repr=False, exclude=True)
+    coinalyze_poll_seconds: int = Field(120, ge=60)
+    coinalyze_requests_per_minute: int = Field(25, ge=1, le=30)
+    # Spot units require reference checks; the official funding schema uses percent.
+    coinalyze_spot_volume_unit: str = "unknown"
+    coinalyze_funding_unit: str = "percent"
+
+    @field_validator("coinalyze_api_key", mode="before")
+    @classmethod
+    def normalize_coinalyze_key(cls, value):
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    @field_validator("coinalyze_spot_volume_unit")
+    @classmethod
+    def validate_spot_volume_unit(cls, value):
+        if value not in {"unknown", "base", "quote"}:
+            raise ValueError("Coinalyze spot volume unit must be unknown/base/quote")
+        return value
+
+    @field_validator("coinalyze_funding_unit")
+    @classmethod
+    def validate_funding_unit(cls, value):
+        if value not in {"unknown", "fraction", "percent"}:
+            raise ValueError("Coinalyze funding unit must be unknown/fraction/percent")
+        return value
+
     @field_validator("database_url")
     @classmethod
     def normalize_database_url(cls, value: str) -> str:
@@ -71,6 +115,14 @@ class Settings(BaseSettings):
             )
         if self.pivot_max_age <= self.pivot_min_age:
             raise ValueError("PIVOT_MAX_AGE must be greater than PIVOT_MIN_AGE")
+        if not self.archive_venues or len(set(self.archive_venues)) != len(self.archive_venues):
+            raise ValueError("ARCHIVE_VENUES must be a non-empty unique list")
+        if set(self.archive_venues) - {"bybit", "binance", "okx", "coinbase"}:
+            raise ValueError("Unsupported ARCHIVE_VENUES entry")
+        if self.coinalyze_enabled and not self.coinalyze_api_key:
+            raise ValueError("COINALYZE_ENABLED requires COINALYZE_API_KEY")
+        if self.coinalyze_enabled and not self.archive_enabled:
+            raise ValueError("COINALYZE_ENABLED requires ARCHIVE_ENABLED")
 
 
 @lru_cache

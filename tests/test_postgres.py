@@ -5,6 +5,7 @@ Uses DATABASE_URL from project settings. Never runs implicitly against a databas
 """
 
 import os
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -84,5 +85,97 @@ async def test_snapshot_and_tracking_survive_repository_recreation():
                 )
                 is None
             )
+    finally:
+        await database.close()
+
+
+async def test_archive_live_writer_lock_is_exclusive_and_releasable():
+    from btc_monitor.archive.store import ArchiveStore
+
+    database = Database(Settings().database_url)
+    store = ArchiveStore(database)
+    first = second = None
+    try:
+        first = await store.acquire_writer()
+        assert first is not None, "Stop the live local archive collector before running this test"
+        assert await store.acquire_writer() is None
+        await store.release_writer(first)
+        first = None
+        second = await store.acquire_writer()
+        assert second is not None
+    finally:
+        if first is not None:
+            await store.release_writer(first)
+        if second is not None:
+            await store.release_writer(second)
+        await database.close()
+
+
+async def test_archive_is_append_only_idempotent_and_replayable_after_restart():
+    from btc_monitor.archive.exchanges import instruments
+    from btc_monitor.archive.replay import window_features
+    from btc_monitor.archive.store import ArchiveStore
+    from btc_monitor.archive.types import Observation
+
+    database = Database(Settings().database_url)
+    try:
+        async with database.engine.connect() as connection:
+            transaction = await connection.begin()
+            database.sessions = async_sessionmaker(
+                bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+            )
+            store = ArchiveStore(database)
+            start = datetime(2026, 1, 1, tzinfo=UTC)
+            rows = [
+                Observation(
+                    inst.venue,
+                    inst.market,
+                    "INTEGRATION_TEST_BTC",
+                    "flow",
+                    60,
+                    start,
+                    start + timedelta(minutes=1),
+                    datetime.now(UTC),
+                    "rest_history",
+                    "integration",
+                    "complete",
+                    {
+                        "buy_base": "3",
+                        "sell_base": "2",
+                        "delta_base": "1",
+                        "open": "100",
+                        "high": "110",
+                        "low": "90",
+                        "close": "105",
+                    },
+                )
+                for inst in instruments(("bybit",))
+            ]
+            assert await store.append(rows) == 2
+            assert await store.append(rows) == 0
+            restored = ArchiveStore(database)
+            loaded = [
+                row
+                async for row in restored.scan(start, start + timedelta(minutes=1))
+                if row["instrument"] == "INTEGRATION_TEST_BTC"
+            ]
+            assert len(loaded) == 2
+            expected = [
+                replace(inst, symbol="INTEGRATION_TEST_BTC") for inst in instruments(("bybit",))
+            ]
+            report = window_features(
+                loaded,
+                expected,
+                start,
+                start + timedelta(minutes=1),
+                start + timedelta(minutes=1),
+                "historical",
+            )
+            assert report["flow_complete"]
+            causal = window_features(
+                loaded, expected, start, start + timedelta(minutes=1), start + timedelta(minutes=1)
+            )
+            assert causal["flow_complete"] is False
+            await transaction.rollback()
     finally:
         await database.close()
