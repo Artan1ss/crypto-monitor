@@ -125,11 +125,11 @@ class HourlyMonitor:
                 log.warning("hourly_monitor_retry", error_type=self.last_error)
             await asyncio.sleep(30)
 
-    async def process(self, start, now, live, lease):
+    async def process(self, start, now, live, lease, force=False):
         end = start + timedelta(hours=1)
         source = self.settings.hourly_source
         cached = await self.repo.bars(source, start, end)
-        if cached and await self.repo.evaluated(source, start):
+        if cached and not force and await self.repo.evaluated(source, start):
             return
         decision = end + timedelta(seconds=self.settings.hourly_decision_delay_seconds)
         if decision > now:
@@ -237,11 +237,12 @@ class HourlyMonitor:
                     await self.repo.set_delivery(alert.id, "sent", datetime.now(UTC), message_id)
 
     async def rebuild(self, start, end, lease):
-        cursor = start
+        # Include prior context at the beginning of an explicit replay; market inputs stay pinned.
+        cursor = start - timedelta(hours=24)
         while cursor < end:
             await lease.exec_driver_sql("SELECT 1")
             await lease.commit()
-            await self.process(cursor, datetime.now(UTC), False, lease)
+            await self.process(cursor, datetime.now(UTC), False, lease, force=True)
             cursor += timedelta(hours=1)
 
     async def request_replay(self, hours):

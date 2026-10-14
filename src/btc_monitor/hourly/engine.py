@@ -7,7 +7,7 @@ from statistics import median
 from btc_monitor.archive.types import serializable
 
 D = Decimal
-VERSION = "h1-pressure-v1"
+VERSION = "h1-pressure-v1.1"
 
 
 def parameters(settings):
@@ -34,7 +34,7 @@ def evaluate(history, settings):
         return result
     bars = history[-25:]
     if (
-        any(not b["complete"] for b in bars)
+        any(b["price"] is None for b in bars)
         or any(
             datetime.fromisoformat(b["start"]) + timedelta(hours=1)
             != datetime.fromisoformat(c["start"])
@@ -61,6 +61,9 @@ def evaluate(history, settings):
     current = bars[-1]
     close, high, low, open_ = (D(price[-1][k]) for k in ("close", "high", "low", "open"))
     window = bars[-settings.hourly_flow_hours :]
+    if any(not b["complete"] for b in window):
+        result["blocked"] = "incomplete_current_cvd_window"
+        return result
     deltas, volumes, pressures = {}, {}, {}
     for market in ("spot", "linear"):
         deltas[market] = sum((D(b["aggregated"][market]["delta_btc"]) for b in window), D(0))
@@ -73,7 +76,10 @@ def evaluate(history, settings):
             result["blocked"] = "invalid_delta_volume_ratio"
             return result
     price_change = close - D(bars[-settings.hourly_flow_hours - 1]["price"]["close"])
-    baseline = median(D(b["aggregated"]["linear"]["volume_btc"]) for b in bars[-21:-1])
+    prior_volume = [b["aggregated"]["linear"]["volume_btc"] for b in bars[-21:-1]]
+    baseline = (
+        median(D(v) for v in prior_volume) if all(v is not None for v in prior_volume) else None
+    )
     volume_ratio = D(current["aggregated"]["linear"]["volume_btc"]) / baseline if baseline else None
     votes = {
         k: sum((D(b["flows"][k]["delta_btc"]) for b in window), D(0))
@@ -126,9 +132,14 @@ def evaluate(history, settings):
         pivot_delta = pivot_pressure = None
         if pivot is not None:
             between = bars[pivot + 1 :]
-            pivot_delta = sum((D(b["aggregated"]["spot"]["delta_btc"]) for b in between), D(0))
-            norm = sum((D(b["aggregated"]["spot"]["volume_btc"]) for b in between), D(0))
-            pivot_pressure = pivot_delta / norm if norm else None
+            if all(
+                b["aggregated"]["spot"]["delta_btc"] is not None
+                and b["aggregated"]["spot"]["volume_btc"] is not None
+                for b in between
+            ):
+                pivot_delta = sum((D(b["aggregated"]["spot"]["delta_btc"]) for b in between), D(0))
+                norm = sum((D(b["aggregated"]["spot"]["volume_btc"]) for b in between), D(0))
+                pivot_pressure = pivot_delta / norm if norm else None
             near = high >= reference - tolerance if sign < 0 else low <= reference + tolerance
             divergence = (
                 near

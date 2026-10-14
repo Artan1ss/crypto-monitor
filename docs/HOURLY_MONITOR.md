@@ -1,6 +1,6 @@
 # BTC 1H Pressure Monitor / Research Desk
 
-This is a separate experimental monitor (`h1-pressure-v1`). V1's original Bybit
+This is a separate experimental monitor (`h1-pressure-v1.1`). V1's original Bybit
 5-minute inputs, scores, thresholds, Telegram rendering and tracking are unchanged.
 No orders are placed. Notifications describe evidence, not guaranteed future moves.
 
@@ -17,8 +17,11 @@ as zero. `HOURLY_SOURCE=direct` uses all seven public streams instead. Sources a
 cohorts are never mixed or dynamically shrunk to hide gaps. This is not CoinGlass's
 entire-market aggregate and will not exactly reproduce the user's screenshot.
 
-Minimum context: 25 consecutive, complete hours of the same cohort. Missing price,
-flow or verified BTC units blocks detection. Missing OI/funding remains null and is
+Minimum context: 25 consecutive price hours of the same cohort, with complete flow
+and verified BTC units throughout the current six-hour CVD window. Older flow gaps
+do not break valid ATR/price structure; any pivot-to-now CVD comparison crossing a
+gap is unavailable, never filled with zero. Missing price/current flow blocks detection.
+Missing OI/funding remains null and is
 reported as unavailable, not interpreted as neutral or zero.
 
 - WATCH: six-hour price change opposes sufficiently strong spot delta/volume pressure,
@@ -137,6 +140,9 @@ Replay can also be started by the dashboard (authenticated same-origin JSON POST
 It returns a job status and never sends historical messages. Existing immutable
 hourly decisions are reused, not revised into better-looking hindsight signals.
 Exports refuse to overwrite files; the parent directory must exist. Range: 30–168H.
+Replay also loads the preceding 24H baseline and can re-evaluate cached feature hours
+with this additional decision-time context. It never changes pinned input bars or
+existing signal snapshots, and uniqueness prevents duplicate signal records.
 The CLI file includes chart features and complete signal feature snapshots, not every
 raw minute. Individual signal HTTP exports additionally contain all raw inputs.
 Use “导入离线复盘” for a file exported from the cloud: it is explicitly offline, stops

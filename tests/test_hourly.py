@@ -205,6 +205,31 @@ def test_single_venue_cannot_create_rolling_watch():
     assert not evaluate(data, config())["candidates"]
 
 
+def test_old_spot_gap_does_not_poison_valid_price_or_recent_flow():
+    data = bars()
+    data[3]["complete"] = False
+    data[3]["aggregated"]["spot"]["delta_btc"] = None
+    data[3]["aggregated"]["spot"]["volume_btc"] = None
+    data[2]["price"]["high"] = "110"
+    result = evaluate(data, config())
+    assert result["blocked"] is None and result["candidates"]
+    assert result["diagnostics"]["references"]["SHORT"]["pivot_to_now_delta_btc"] is None
+
+
+async def test_replay_includes_baseline_and_forces_only_analysis_not_inputs():
+    monitor = HourlyMonitor(config(), SimpleNamespace())
+    monitor.process = AsyncMock()
+    lease = SimpleNamespace(exec_driver_sql=AsyncMock(), commit=AsyncMock())
+    try:
+        await monitor.rebuild(START, START + timedelta(hours=2), lease)
+        assert monitor.process.await_count == 26
+        first = monitor.process.call_args_list[0]
+        assert first.args[0] == START - timedelta(hours=24)
+        assert first.args[2] is False and first.kwargs["force"]
+    finally:
+        await monitor.stop()
+
+
 def test_symmetric_bullish_pressure_divergence():
     data = bars()
     for i, b in enumerate(data):
