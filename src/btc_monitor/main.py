@@ -6,10 +6,14 @@ from uuid import UUID
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Response, status
 
+from btc_monitor.access import MonitorAccess
 from btc_monitor.archive.service import ResearchCollector
 from btc_monitor.archive.store import ArchiveStore
 from btc_monitor.config import get_settings
 from btc_monitor.db import Database
+from btc_monitor.hourly.api import routes
+from btc_monitor.hourly.repository import HourlyRepository
+from btc_monitor.hourly.service import HourlyMonitor
 from btc_monitor.logging import configure_logging
 from btc_monitor.repository import Repository
 from btc_monitor.runtime import MonitorRuntime
@@ -21,17 +25,23 @@ repository = Repository(database)
 runtime = MonitorRuntime(settings, repository)
 archive_store = ArchiveStore(database)
 archive_runtime = ResearchCollector(settings, archive_store)
+hourly_repository = HourlyRepository(database)
+hourly_runtime = HourlyMonitor(settings, hourly_repository)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await runtime.start()
     await archive_runtime.start()
+    await hourly_runtime.start()
     try:
         yield
     finally:
         try:
-            await archive_runtime.stop()
+            try:
+                await hourly_runtime.stop()
+            finally:
+                await archive_runtime.stop()
         finally:
             try:
                 await runtime.stop()
@@ -40,6 +50,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app.add_middleware(MonitorAccess, password=settings.dashboard_password)
+app.include_router(routes(hourly_runtime, hourly_repository))
 
 
 @app.get("/")

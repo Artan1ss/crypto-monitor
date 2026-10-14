@@ -6,6 +6,12 @@ and 1-hour trend context, then persists and optionally sends qualified signals t
 
 V1 is analysis-only. It never authenticates with Bybit and cannot place orders.
 
+The independent [1H Pressure Monitor](docs/HOURLY_MONITOR.md) adds graded CVD/price
+divergence and breakout-rejection alerts, immutable evidence, 1/4/12/24H outcomes,
+and the `/dashboard` research desk. Local UI only (no collectors or Telegram):
+`python -m btc_monitor.hourly.preview`, then open `http://127.0.0.1:8011/dashboard`.
+The dashboard can import cloud review exports without exposing Railway publicly.
+
 ## What it does
 
 - Uses independent Bybit public Spot and Linear WebSocket connections.

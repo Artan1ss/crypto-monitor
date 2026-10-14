@@ -27,6 +27,62 @@ pytestmark = pytest.mark.skipif(
 D = Decimal
 
 
+async def test_hourly_feature_immutability_and_restart_persistence():
+    from uuid import uuid4
+
+    from btc_monitor.hourly.repository import HourlyRepository
+
+    database = Database(Settings().database_url)
+    try:
+        async with database.engine.connect() as connection:
+            transaction = await connection.begin()
+            database.sessions = async_sessionmaker(
+                bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+            )
+            repo = HourlyRepository(database)
+            start = datetime(2020, 1, 1, tzinfo=UTC)
+            bar = {
+                "source": "coinalyze",
+                "start": start.isoformat(),
+                "decision_at": (start + timedelta(hours=1, minutes=3)).isoformat(),
+                "complete": True,
+            }
+            await repo.save_bar(bar)
+            await repo.save_bar({**bar, "complete": False})
+            recovered = HourlyRepository(database)
+            assert (await recovered.bars("coinalyze", start, start + timedelta(hours=1)))[0][
+                "complete"
+            ]
+            assert await recovered.evaluated("coinalyze", start) is False
+            await recovered.mark_evaluated("coinalyze", start)
+            assert await repo.evaluated("coinalyze", start) is True
+            alert_id = uuid4()
+            values = {
+                "id": alert_id,
+                "source": "coinalyze",
+                "bar_start": start,
+                "generated_at": start,
+                "direction": "SHORT",
+                "tier": "WATCH",
+                "origin": "retrospective",
+                "entry": D(100),
+                "invalidation": D(110),
+                "snapshot": {"input_ids": [1]},
+                "delivery_state": "retrospective",
+                "tracking_complete": False,
+            }
+            assert await repo.save_alert(values) == alert_id
+            assert await repo.save_alert({**values, "id": uuid4()}) is None
+            result = {"windows": {"24": {"verdict": "insufficient_data"}}}
+            await repo.save_outcomes(alert_id, result, True)
+            row = await recovered.alert(alert_id)
+            assert row.outcomes == result and row.tracking_complete
+            assert row.snapshot == {"input_ids": [1]}
+            await transaction.rollback()
+    finally:
+        await database.close()
+
+
 async def test_snapshot_and_tracking_survive_repository_recreation():
     settings = Settings()
     database = Database(settings.database_url)

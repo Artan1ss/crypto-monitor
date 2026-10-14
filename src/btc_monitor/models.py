@@ -21,6 +21,40 @@ from sqlalchemy.orm import Mapped, mapped_column
 from btc_monitor.db import Base
 
 
+class HourlyBarRecord(Base):
+    __tablename__ = "hourly_bars"
+    __table_args__ = (UniqueConstraint("source", "start"),)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decision_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    features: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evaluated: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+
+
+class HourlyAlertRecord(Base):
+    __tablename__ = "hourly_alerts"
+    __table_args__ = (
+        UniqueConstraint("source", "bar_start", "direction", "tier"),
+        Index("ix_hourly_alerts_generated", "generated_at"),
+    )
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    bar_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    origin: Mapped[str] = mapped_column(String(24), nullable=False)
+    entry: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    invalidation: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    outcomes: Mapped[dict | None] = mapped_column(JSONB)
+    tracking_complete: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    delivery_state: Mapped[str] = mapped_column(String(24), nullable=False)
+    delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivery_id: Mapped[str | None] = mapped_column(String(64))
+
+
 class MarketObservation(Base):
     """Append-only research archive. Never participates in V1 signal evaluation."""
 

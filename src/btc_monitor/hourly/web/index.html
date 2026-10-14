@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BTC / 1H Research Desk</title><link rel="stylesheet" href="/dashboard/assets/app.css"></head>
+<body>
+<header><div><span class="eyebrow">BTC MONITOR · RESEARCH DESK</span><h1>看清价格背后的主动成交</h1></div><div id="status" role="status">连接中</div></header>
+<nav aria-label="研究控制"><label>时间范围<select id="range"><option value="24">最近 24 小时</option><option value="72" selected>最近 3 天</option><option value="168">最近 7 天</option></select></label><label>方向<select id="direction"><option value="ALL">全部</option><option>SHORT</option><option>LONG</option></select></label><label>通知级别<select id="tier"><option value="ALL">全部</option><option value="WATCH">观察</option><option value="CONFIRMED">价格确认</option></select></label><label>记录来源<select id="origin"><option value="ALL">全部</option><option value="live">实时</option><option value="retrospective">历史重建</option></select></label><button id="refresh">刷新</button><button id="replay">重建历史（不发 TG）</button><label class="file-button">导入离线复盘<input id="import" type="file" accept="application/json,.json"></label><button id="online" hidden>返回在线</button></nav>
+<p id="notice" class="notice">1H 收盘评估；箭头对应实际生成时刻，圆点对应触发小时收盘。观察与确认都不是交易指令。</p>
+<section class="summary" aria-label="运行概况"><div><small>数据集合</small><strong id="source">—</strong></div><div><small>完整小时 / 当前范围</small><strong id="coverage">—</strong></div><div><small>信号记录 / 实际发送</small><strong id="counts">—</strong></div><div><small>24H 方向验证</small><strong id="performance">—</strong></div></section>
+<main><section class="chart-section"><div class="section-head"><h2>BTCUSDT · 1H</h2><span>价格：Bybit 合约 · 时间：America/Toronto</span></div><div class="legend"><span class="short">↓ SHORT</span><span class="long">↑ LONG</span><span>空心：观察 / 实心：确认</span><span>虚线：选中信号失效参考</span></div><div id="hover" class="hover">移动到图表查看同一小时指标，点击箭头打开信号</div><div id="chart" role="region" aria-label="价格、成交量、CVD、OI和费率对齐图表"></div></section><aside id="detail"><h2>信号证据</h2><p class="muted">点击图表标记或下方信号，查看完整诊断、关键位和后续结果。</p></aside></main>
+<section class="signals-section"><div class="section-head"><h2>信号与结果账本</h2><span>冷却期内的候选也留存；历史重建从未发出通知</span></div><div id="signals" class="signal-list"></div></section>
+<footer>固定市场集合，不等同全市场。CVD 以可见连续段归零，缺口不插值；OI 不能推断多空仓位。数据：交易所公开行情 / <a href="https://coinalyze.net/" target="_blank" rel="noreferrer">Coinalyze</a>。结果是观察性方向验证，不是实际盈亏。</footer>
+<script src="/dashboard/assets/app.js" defer></script></body></html>

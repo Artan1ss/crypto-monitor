@@ -73,6 +73,26 @@ class Settings(BaseSettings):
     coinalyze_spot_volume_unit: str = "unknown"
     coinalyze_funding_unit: str = "percent"
 
+    # Independent 1H research alerts; never changes V1 settings.
+    hourly_enabled: bool = False
+    hourly_telegram_enabled: bool = False
+    hourly_source: str = "coinalyze"
+    hourly_decision_delay_seconds: int = Field(180, ge=30, le=600)
+    hourly_context_hours: int = Field(48, ge=30, le=72)
+    hourly_flow_hours: int = Field(6, ge=2, le=12)
+    hourly_pressure_threshold: float = Field(0.05, gt=0, le=0.5)
+    hourly_price_move_atr: float = Field(0.15, ge=0, le=2)
+    hourly_level_tolerance_atr: float = Field(0.25, gt=0, le=1)
+    hourly_cooldown_hours: int = Field(4, ge=1, le=24)
+    dashboard_password: SecretStr | None = Field(None, repr=False, exclude=True)
+
+    @field_validator("hourly_source")
+    @classmethod
+    def validate_hourly_source(cls, value):
+        if value not in {"coinalyze", "direct"}:
+            raise ValueError("HOURLY_SOURCE must be coinalyze/direct")
+        return value
+
     @field_validator("coinalyze_api_key", mode="before")
     @classmethod
     def normalize_coinalyze_key(cls, value):
@@ -123,6 +143,8 @@ class Settings(BaseSettings):
             raise ValueError("COINALYZE_ENABLED requires COINALYZE_API_KEY")
         if self.coinalyze_enabled and not self.archive_enabled:
             raise ValueError("COINALYZE_ENABLED requires ARCHIVE_ENABLED")
+        if self.hourly_telegram_enabled and not (self.hourly_enabled and self.telegram_enabled):
+            raise ValueError("HOURLY_TELEGRAM_ENABLED requires HOURLY_ENABLED and TELEGRAM_ENABLED")
 
 
 @lru_cache

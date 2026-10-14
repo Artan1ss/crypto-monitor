@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import html
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from uuid import uuid4
+from zoneinfo import ZoneInfo
+
+import structlog
+
+from btc_monitor.archive.types import serializable
+from btc_monitor.hourly.engine import evaluate, parameters
+from btc_monitor.hourly.features import build_hour
+from btc_monitor.hourly.outcomes import track
+from btc_monitor.telegram import TelegramClient
+
+log = structlog.get_logger()
+
+
+def hour(time):
+    return time.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+
+
+def render_alert(row):
+    snapshot = row.snapshot
+    d, c = snapshot["diagnostics"], snapshot["candidate"]
+    local = row.generated_at.astimezone(ZoneInfo("America/Toronto")).strftime("%m-%d %H:%M %Z")
+    label = "观察 / WATCH" if row.tier == "WATCH" else "价格确认 / CONFIRMED"
+    oi = "缺失" if d["oi_change_pct"] is None else f"{Decimal(d['oi_change_pct']):+.2f}%"
+    funding = (
+        "缺失"
+        if d["funding_fraction_mean"] is None
+        else f"{Decimal(d['funding_fraction_mean']) * 100:+.4f}%"
+    )
+    reasons = "\n".join("• " + html.escape(v) for v in c["reasons"])
+    volume = "缺失" if d["volume_ratio"] is None else f"{Decimal(d['volume_ratio']):.2f}x"
+    return (
+        f"<b>BTC 1H {row.direction} — {label}</b>\n{local}\n"
+        f"类型：{html.escape(c['kind'])}\n参考价：${row.entry:,.2f}\n"
+        f"结构失效参考：${row.invalidation:,.2f}\n"
+        f"现货 {snapshot['parameters']['flow_hours']}H ΔCVD："
+        f"{Decimal(d['spot_delta_btc']):+.2f} BTC\n"
+        f"合约 ΔCVD：{Decimal(d['futures_delta_btc']):+.2f} BTC\n"
+        f"现货主动压力：{Decimal(d['spot_pressure']) * 100:+.2f}%\n"
+        f"OI 1H：{oi}\n报告费率均值：{funding}\n"
+        f"合约量比：{volume}\n"
+        f"{html.escape(c['context'])}\n{reasons}\n"
+        f"来源：{html.escape(row.source)} 固定交易所集合，非全市场\n"
+        f"快照 ID：<code>{row.id}</code>\n"
+        "<i>研究提醒，非买卖建议；未下单。费率未统一结算周期，OI不能确认多空仓位。</i>"
+    )
+
+
+class HourlyMonitor:
+    def __init__(self, settings, repository):
+        self.settings, self.repo = settings, repository
+        self.telegram = TelegramClient(
+            settings.hourly_telegram_enabled, settings.telegram_bot_token, settings.telegram_chat_id
+        )
+        self.task = None
+        self.mutex = asyncio.Lock()
+        self.started_at = datetime.now(UTC)
+        self.last_success = self.last_error = self.last_evaluation = None
+        self.waiting_for_writer = False
+        self.bootstrap_done = False
+        self.replay_task = None
+        self.replay_state = {"state": "idle"}
+        self.fingerprint = hashlib.sha256(
+            b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.parent.rglob("*.py")))
+        ).hexdigest()
+
+    async def start(self):
+        if self.settings.hourly_enabled:
+            self.task = asyncio.create_task(self._loop(), name="hourly-monitor")
+
+    def health(self):
+        return serializable(
+            {
+                "enabled": self.settings.hourly_enabled,
+                "telegram_enabled": self.settings.hourly_telegram_enabled,
+                "source": self.settings.hourly_source,
+                "healthy": self.task is not None
+                and not self.task.done()
+                and self.last_success is not None
+                and not self.last_error
+                and datetime.now(UTC) - self.last_success < timedelta(minutes=3),
+                "last_success_at": self.last_success,
+                "last_error": self.last_error,
+                "waiting_for_writer": self.waiting_for_writer,
+                "last_evaluation": self.last_evaluation,
+                "replay": self.replay_state,
+                "parameters": parameters(self.settings),
+            }
+        )
+
+    async def _loop(self):
+        while True:
+            try:
+                async with self.mutex, self.repo.lease() as lease:
+                    self.waiting_for_writer = lease is None
+                    if lease is not None:
+                        now = datetime.now(UTC)
+                        last_end = hour(
+                            now - timedelta(seconds=self.settings.hourly_decision_delay_seconds)
+                        )
+                        if not self.bootstrap_done:
+                            await self.rebuild(
+                                last_end - timedelta(hours=self.settings.hourly_context_hours),
+                                last_end,
+                                lease=lease,
+                            )
+                            self.bootstrap_done = True
+                        else:
+                            await self.process(last_end - timedelta(hours=1), now, True, lease)
+                        await self.deliver_outbox(now, lease)
+                        await self.update_outcomes(now)
+                        self.last_success, self.last_error = datetime.now(UTC), None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.last_error = type(exc).__name__
+                log.warning("hourly_monitor_retry", error_type=self.last_error)
+            await asyncio.sleep(30)
+
+    async def process(self, start, now, live, lease):
+        end = start + timedelta(hours=1)
+        source = self.settings.hourly_source
+        cached = await self.repo.bars(source, start, end)
+        if cached and await self.repo.evaluated(source, start):
+            return
+        decision = end + timedelta(seconds=self.settings.hourly_decision_delay_seconds)
+        if decision > now:
+            return
+        if not cached:
+            rows = await self.repo.observations(start - timedelta(minutes=10), decision, source)
+            if source == "coinalyze":
+                metadata = await self.repo.metadata(decision)
+                if metadata:
+                    rows.append(metadata)
+            bar = build_hour(rows, start, decision, source)
+            await self.repo.save_bar(bar)
+        history = await self.repo.bars(source, start - timedelta(hours=24), end)
+        analysis = evaluate(history, self.settings)
+        self.last_evaluation = {
+            "bar_start": start,
+            "blocked": analysis["blocked"],
+            "candidate_count": len(analysis["candidates"]),
+        }
+        for candidate in analysis["candidates"]:
+            entry, observed = await self.repo.entry_sample(now) if live else (None, None)
+            basis = "fresh_bybit_ticker_at_generation" if entry else "historical_hour_close_no_fill"
+            if entry is None:
+                entry = Decimal(candidate["bar_close"])
+            state = (
+                "pending"
+                if live and self.settings.hourly_telegram_enabled
+                else "disabled"
+                if live
+                else "retrospective"
+            )
+            if live and observed is None:
+                state = "missing_fresh_entry"
+            if live and (
+                (candidate["direction"] == "LONG" and entry <= Decimal(candidate["invalidation"]))
+                or (
+                    candidate["direction"] == "SHORT"
+                    and entry >= Decimal(candidate["invalidation"])
+                )
+            ):
+                state = "invalidated_before_delivery"
+            if state == "pending" and await self.repo.cooling_down(
+                source,
+                start,
+                candidate["direction"],
+                candidate["tier"],
+                self.settings.hourly_cooldown_hours,
+            ):
+                state = "suppressed_cooldown"
+            alert_id = uuid4()
+            ids = sorted({row_id for b in history for row_id in b["input_ids"]})
+            snapshot = serializable(
+                {
+                    "schema_version": 1,
+                    "code_sha256": self.fingerprint,
+                    "parameters": parameters(self.settings),
+                    "computed_at": now,
+                    "decision_at": decision,
+                    "causal_inputs": True,
+                    "candidate": candidate,
+                    "diagnostics": analysis["diagnostics"],
+                    "history": history,
+                    "input_ids": ids,
+                    "entry_basis": basis,
+                    "entry_observed_at": observed,
+                    "reference_bar_close": candidate["bar_close"],
+                    "origin": "live" if live else "retrospective",
+                    "data_retention": "Immutable raw inputs retained; export includes all IDs",
+                }
+            )
+            await self.repo.save_alert(
+                {
+                    "id": alert_id,
+                    "source": source,
+                    "bar_start": start,
+                    "generated_at": now if live else decision,
+                    "direction": candidate["direction"],
+                    "tier": candidate["tier"],
+                    "origin": "live" if live else "retrospective",
+                    "entry": entry,
+                    "invalidation": Decimal(candidate["invalidation"]),
+                    "snapshot": snapshot,
+                    "tracking_complete": False,
+                    "delivery_state": state,
+                }
+            )
+        await self.repo.mark_evaluated(source, start)
+
+    async def deliver_outbox(self, now, lease):
+        if not self.settings.hourly_telegram_enabled:
+            return
+        for alert in await self.repo.pending_deliveries():
+            if now - alert.generated_at > timedelta(minutes=10):
+                await self.repo.set_delivery(alert.id, "stale_delivery", expected="pending")
+                continue
+            # Verify physical lock ownership before external effects.
+            await lease.exec_driver_sql("SELECT 1")
+            await lease.commit()
+            if await self.repo.set_delivery(alert.id, "attempted", expected="pending"):
+                try:
+                    message_id = await self.telegram.send(render_alert(alert))
+                except Exception:
+                    await self.repo.set_delivery(alert.id, "uncertain")
+                else:
+                    await self.repo.set_delivery(alert.id, "sent", datetime.now(UTC), message_id)
+
+    async def rebuild(self, start, end, lease):
+        cursor = start
+        while cursor < end:
+            await lease.exec_driver_sql("SELECT 1")
+            await lease.commit()
+            await self.process(cursor, datetime.now(UTC), False, lease)
+            cursor += timedelta(hours=1)
+
+    async def request_replay(self, hours):
+        if self.replay_task and not self.replay_task.done():
+            return False
+
+        async def job():
+            self.replay_state = {"state": "running", "hours": hours}
+            try:
+                async with self.mutex, self.repo.lease() as lease:
+                    if lease is None:
+                        raise RuntimeError("Another hourly writer is active")
+                    end = hour(
+                        datetime.now(UTC)
+                        - timedelta(seconds=self.settings.hourly_decision_delay_seconds)
+                    )
+                    await self.rebuild(end - timedelta(hours=hours), end, lease)
+                    await self.update_outcomes(datetime.now(UTC))
+                self.replay_state = {"state": "complete", "hours": hours}
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self.replay_state = {"state": "failed", "error": type(exc).__name__}
+
+        self.replay_task = asyncio.create_task(job(), name="hourly-replay")
+        return True
+
+    async def update_outcomes(self, now):
+        alerts = await self.repo.alerts(self.settings.hourly_source, pending=True, limit=100)
+        if not alerts:
+            return
+        rows = await self.repo.observations(
+            min(a.generated_at for a in alerts), now, "direct", price_only=True
+        )
+        for alert in alerts:
+            end = min(now, alert.generated_at + timedelta(hours=24))
+            if end <= alert.generated_at:
+                continue
+            result = track(alert, rows, now)
+            await self.repo.save_outcomes(
+                alert.id, result, now >= alert.generated_at + timedelta(hours=24, minutes=2)
+            )
+
+    async def stop(self):
+        tasks = [t for t in (self.task, self.replay_task) if t]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await self.telegram.close()
