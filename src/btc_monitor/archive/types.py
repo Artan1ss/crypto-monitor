@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 
 def utc(value: datetime) -> datetime:
@@ -29,6 +30,8 @@ def decimal(value) -> Decimal:
 
 
 def serializable(value):
+    if isinstance(value, UUID):
+        return str(value)
     if isinstance(value, datetime):
         return utc(value).isoformat()
     if isinstance(value, Decimal):

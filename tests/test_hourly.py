@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -424,8 +425,42 @@ async def test_api_replay_csrf_bounds_and_static_assets():
         m.request_replay.assert_awaited_once()
 
 
+async def test_signal_detail_and_raw_export_support_uuid_decimal_and_time():
+    identifier = uuid4()
+    row = SimpleNamespace(
+        id=identifier,
+        source="coinalyze",
+        bar_start=START,
+        generated_at=START,
+        direction="SHORT",
+        tier="WATCH",
+        origin="retrospective",
+        entry=D(100),
+        invalidation=D(110),
+        outcomes=None,
+        tracking_complete=False,
+        delivery_state="retrospective",
+        delivery_at=None,
+        snapshot={"candidate": {"kind": "cvd_divergence", "reasons": ["test"]}, "input_ids": []},
+    )
+    repo = SimpleNamespace(alert=AsyncMock(return_value=row), raw_inputs=AsyncMock(return_value=[]))
+    app = FastAPI()
+    app.include_router(routes(SimpleNamespace(), repo))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        response = await c.get(f"/hourly/signals/{identifier}")
+        assert response.status_code == 200 and response.json()["id"] == str(identifier)
+        response = await c.get(f"/hourly/signals/{identifier}/export")
+        assert response.status_code == 200 and response.json()["signal"]["entry"] == "100"
+
+
 def test_export_never_overwrites_existing_file(tmp_path):
     target = tmp_path / "review.json"
-    save_export(target, {"schema": "btc-hourly-review-v1"})
+    save_export(target, {"schema": "btc-hourly-review-v1", "signal_id": uuid4()})
     with pytest.raises(FileExistsError):
         save_export(target, {})
+    invalid = tmp_path / "invalid.json"
+    with pytest.raises(TypeError):
+        save_export(invalid, {"unsupported": object()})
+    assert not invalid.exists()

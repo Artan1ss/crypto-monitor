@@ -14,9 +14,10 @@ from btc_monitor.hourly.service import HourlyMonitor, hour
 
 
 def save_export(output, payload):
+    encoded = json.dumps(serializable(payload), ensure_ascii=False)
     path = Path(output).resolve()
     with path.open("x", encoding="utf-8") as stream:
-        json.dump(serializable(payload), stream, ensure_ascii=False)
+        stream.write(encoded)
     return str(path)
 
 
