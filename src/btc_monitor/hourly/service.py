@@ -137,9 +137,8 @@ class HourlyMonitor:
         if not cached:
             rows = await self.repo.observations(start - timedelta(minutes=10), decision, source)
             if source == "coinalyze":
-                metadata = await self.repo.metadata(decision)
-                if metadata:
-                    rows.append(metadata)
+                metadata = await self.repo.metadata_history(decision)
+                rows = list({r["id"]: r for r in rows + metadata}.values())
             bar = build_hour(rows, start, decision, source)
             await self.repo.save_bar(bar)
         history = await self.repo.bars(source, start - timedelta(hours=24), end)

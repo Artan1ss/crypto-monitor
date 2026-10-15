@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
@@ -14,6 +14,23 @@ from btc_monitor.models import MarketObservation
 class ArchiveStore:
     def __init__(self, database: Database):
         self.database = database
+
+    async def unit_metadata(self):
+        now = datetime.now(UTC)
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(
+                    select(MarketObservation)
+                    .where(
+                        MarketObservation.dataset == "provider_metadata",
+                        MarketObservation.available_at <= now,
+                        MarketObservation.available_at >= now - timedelta(hours=48),
+                    )
+                    .order_by(MarketObservation.id.desc())
+                    .limit(1000)
+                )
+            ).all()
+        return [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows]
 
     async def append(self, observations: list[Observation]) -> int:
         if not observations:

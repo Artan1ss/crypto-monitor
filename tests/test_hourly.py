@@ -282,6 +282,78 @@ def test_stale_derivatives_remain_missing_not_zero():
     assert b["complete"] and b["oi_change_pct"] is None and b["funding_fraction_mean"] is None
 
 
+def prior_unit_metadata():
+    at = START - timedelta(minutes=1)
+    payload = {
+        "provider": "coinalyze",
+        "selected": [
+            {"feed": i.key, "provider_symbol": i.key, "volume_unit": "base"}
+            for i in universe("coinalyze")
+            if i.market == "spot"
+        ],
+        "calibration": {
+            i.key: {
+                "verified": True,
+                "matched_minutes": 5,
+                "max_relative_error": "0.00000001",
+                "end": (START - timedelta(hours=25)).isoformat(),
+            }
+            for i in universe("coinalyze")
+            if i.market == "spot"
+        },
+    }
+    row = Observation(
+        "coinalyze",
+        "metadata",
+        "BTC",
+        "provider_metadata",
+        0,
+        at,
+        at,
+        at,
+        "coinalyze_history",
+        "test",
+        "complete",
+        payload,
+    ).values()
+    return {**row, "id": 99000, "available_at": at}
+
+
+async def test_prior_evidence_repairs_review_without_changing_stored_decision_or_raw():
+    from btc_monitor.hourly.review import review_bars
+
+    rows = provider_rows()
+    for r in rows:
+        if r["market"] == "spot":
+            r["payload"]["volume_unit"] = "unknown"
+    raw_before = copy.deepcopy(rows)
+    decision = START + timedelta(hours=1, minutes=3)
+    original = build_hour(rows, START, decision)
+    assert not original["complete"]
+    repo = SimpleNamespace(
+        bars=AsyncMock(return_value=[original]),
+        observations=AsyncMock(return_value=rows),
+        metadata_history=AsyncMock(return_value=[prior_unit_metadata()]),
+    )
+    repaired = (await review_bars(repo, "coinalyze", START, decision))[0]
+    assert repaired["complete"] and len(repaired["unit_recovery"]) == 180
+    assert repaired["aggregated"]["spot"]["delta_btc"] == "-360"
+    assert repaired["review_recovery"]["original_decision_complete"] is False
+    assert not original["complete"] and "review_recovery" not in original
+    assert rows == raw_before and 99000 in repaired["input_ids"]
+
+
+def test_unit_evidence_cannot_fill_a_missing_minute():
+    rows = provider_rows()[1:]
+    for r in rows:
+        if r["market"] == "spot":
+            r["payload"]["volume_unit"] = "unknown"
+    bar = build_hour(rows + [prior_unit_metadata()], START, START + timedelta(hours=1, minutes=3))
+    assert not bar["complete"]
+    first = next(i for i in universe("coinalyze") if i.market == "spot")
+    assert "missing_minutes" in bar["flows"][first.key]["quality_reasons"]
+
+
 def price_rows(count=60, missing=None):
     inst = next(i for i in universe("direct") if i.key == "bybit:linear:BTCUSDT")
     rows = []

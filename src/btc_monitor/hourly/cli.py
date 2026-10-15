@@ -11,6 +11,7 @@ from btc_monitor.archive.types import serializable
 from btc_monitor.config import get_settings
 from btc_monitor.db import Database
 from btc_monitor.hourly.repository import HourlyRepository, alert_json
+from btc_monitor.hourly.review import review_bars
 from btc_monitor.hourly.service import HourlyMonitor, hour
 
 
@@ -45,8 +46,8 @@ async def execute(args):
             payload = {
                 "schema": "btc-hourly-review-v1",
                 "exported_at": now,
-                "bars": await repo.bars(
-                    settings.hourly_source, end - timedelta(hours=args.hours), now
+                "bars": await review_bars(
+                    repo, settings.hourly_source, end - timedelta(hours=args.hours), now
                 ),
                 "signals": [
                     alert_json(r, True)

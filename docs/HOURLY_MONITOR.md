@@ -120,6 +120,22 @@ at the beginning of the visible uninterrupted segment; gaps are not interpolated
 Candles with missing aggregate flow remain visually subdued. Marker arrows are
 generated-at timestamps; small close dots identify the triggering hour's end.
 
+Each CVD panel now checks **its own** market coverage, not the overall hour flag.
+A spot-unit failure cannot hide complete futures CVD. Genuine gaps are shaded and
+the next uninterrupted segment is explicitly marked as a new cumulative baseline.
+Do not compare absolute CVD heights across such a reset.
+
+Dashboard/API chart bars and CLI review exports may include a read-only unit recovery
+overlay for old incomplete hours. This uses the original raw minutes plus strict unit
+proofs that were already available **before each observation was received** and valid
+within 48 hours. Future evidence, missing minutes and explicit quote/contract units
+cannot be used as substitutes. `review_recovery` retains the original completeness and
+lineage; `unit_recovery` lists every recovered row and its evidence metadata ID.
+Charts label these hours as review corrections. Database feature decisions, existing
+signal snapshots/outcomes and prior notification history are never overwritten, and
+this read-only repair never sends messages. Old offline files need a new cloud export
+to receive this overlay; the browser never invents missing raw inputs.
+
 For UI-only local use, run `python -m btc_monitor.hourly.preview` and open
 `http://127.0.0.1:8011/dashboard`. This deliberately starts no V1 collectors or
 Telegram background worker; offline cloud review files can be imported directly.

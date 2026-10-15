@@ -225,12 +225,16 @@ class ResearchCollector:
                     or source.discovery_at is None
                     or datetime.now(UTC) - source.discovery_at > timedelta(days=1)
                 ):
-                    discovered = await source.discover()
+                    await source.discover()
+                    source.restore_metadata(await self.store.unit_metadata())
+                    prepared = False
+                if not prepared or source.needs_calibration():
                     await source.calibrate(self.rest)
                     discovered = source.catalog()
                     state["selected_feeds"] = discovered["selected"]
                     state["missing_feeds"] = source.missing
                     state["calibration"] = source.calibration
+                    state["unit_verifications"] = source.unit_verifications.copy()
                     metadata = source.metadata_observation()
                     self._polling["coinalyze"] = [metadata]
                     await self.queue.put(metadata)
@@ -321,6 +325,12 @@ class ResearchCollector:
             and not provider["missing_feeds"]
             and bool(provider["series"])
             and all(s["returned"] == s["expected_bars"] for s in provider["series"])
+        )
+        provider["unverified_unit_feeds"] = [
+            m["feed"] for m in provider["selected_feeds"] if m["volume_unit"] != "base"
+        ]
+        provider["normalization_ready"] = (
+            bool(provider["selected_feeds"]) and not provider["unverified_unit_feeds"]
         )
         provider["request_count"] = (
             self.coinalyze_client.request_count if self.coinalyze_client else 0

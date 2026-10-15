@@ -231,6 +231,24 @@ class HourlyRepository:
             )
         return {c.name: getattr(row, c.name) for c in row.__table__.columns} if row else None
 
+    async def metadata_history(self, decision):
+        async with self.db.session() as session:
+            rows = (
+                await session.scalars(
+                    select(MarketObservation)
+                    .where(
+                        MarketObservation.dataset == "provider_metadata",
+                        MarketObservation.available_at <= decision,
+                        MarketObservation.available_at >= decision - timedelta(hours=48),
+                    )
+                    .order_by(MarketObservation.available_at, MarketObservation.id)
+                    .limit(1001)
+                )
+            ).all()
+        if len(rows) > 1000:
+            raise ValueError("Unit evidence history exceeds safe bound")
+        return [{c.name: getattr(r, c.name) for c in r.__table__.columns} for r in rows]
+
 
 def alert_json(row, detail=False):
     value = {

@@ -8,6 +8,7 @@ from btc_monitor.archive.exchanges import instruments
 from btc_monitor.archive.provider_replay import select_bars
 from btc_monitor.archive.replay import eligible, window_features
 from btc_monitor.archive.types import serializable
+from btc_monitor.archive.units import recover_flow_units
 
 D = Decimal
 
@@ -19,6 +20,9 @@ def universe(source):
 
 
 def build_hour(rows, start, decision, source="coinalyze"):
+    recovered_units = []
+    if source == "coinalyze":
+        rows, recovered_units = recover_flow_units(rows, decision)
     end = start + timedelta(hours=1)
     expected = universe(source)
     available = eligible(rows, decision, "as_received")
@@ -100,6 +104,22 @@ def build_hour(rows, start, decision, source="coinalyze"):
             "expected_bars": count,
             "resolution_seconds": resolution,
             "price": price,
+            "quality_reasons": []
+            if complete
+            else (
+                (["missing_minutes"] if len(bars) != count else [])
+                + (
+                    ["unverified_or_mixed_volume_units"]
+                    if source == "coinalyze"
+                    and evidence["flows"][inst.key]["volume_unit"] != "base"
+                    else []
+                )
+                + (
+                    ["missing_buy_sell_delta"]
+                    if any(r["payload"].get(delta_field) is None for r in bars)
+                    else []
+                )
+            ),
         }
         if inst.market == "linear":
             d = evidence["derivatives"][inst.key]
@@ -173,7 +193,7 @@ def build_hour(rows, start, decision, source="coinalyze"):
     digest = hashlib.sha256("\n".join(r["fingerprint"] for r in lineage).encode()).hexdigest()
     return serializable(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "start": start,
             "end": end,
             "decision_at": decision,
@@ -193,6 +213,7 @@ def build_hour(rows, start, decision, source="coinalyze"):
             "funding_basis": "unweighted_reported_rate_mean",
             "input_ids": sorted(input_ids),
             "normalization_metadata": [r["payload"] for r in metadata],
+            "unit_recovery": [r for r in recovered_units if r["id"] in input_ids],
             "lineage_sha256": digest,
             "quality_reason": None
             if price and all(v["complete"] for v in aggregates.values())

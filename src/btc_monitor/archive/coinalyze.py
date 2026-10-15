@@ -15,6 +15,7 @@ import httpx
 from btc_monitor.archive.exchanges import PublicRest, instruments
 from btc_monitor.archive.history import HistoryLoader, validate_range
 from btc_monitor.archive.types import Instrument, Observation, decimal, utc
+from btc_monitor.archive.units import UNIT_RECHECK_AFTER, proof_valid, unit_proofs
 
 INTERVALS = {"1min": 60, "5min": 300, "1hour": 3600, "4hour": 14400, "daily": 86400}
 ENDPOINTS = {
@@ -200,6 +201,8 @@ class CoinalyzeSource:
         self.missing: list[str] = []
         self.discovery_at: datetime | None = None
         self.calibration: dict = {}
+        self.unit_verifications: dict = {}
+        self.last_calibration_at = None
         self.funding_unit = settings.coinalyze_funding_unit
 
     async def discover(self):
@@ -210,7 +213,50 @@ class CoinalyzeSource:
         if not self.markets:
             raise CoinalyzeError("no_matching_btc_markets")
         self.discovery_at = datetime.now(UTC)
+        self.apply_verifications()
         return self.catalog()
+
+    def restore_metadata(self, rows):
+        for (feed, symbol), proof in unit_proofs(rows, datetime.now(UTC)).items():
+            if any(m.instrument.key == feed and m.provider_symbol == symbol for m in self.markets):
+                existing = self.unit_verifications.get(feed)
+                if not existing or proof["verified_at"] > existing["verified_at"]:
+                    self.unit_verifications[feed] = proof
+        self.apply_verifications()
+
+    def apply_verifications(self):
+        now = datetime.now(UTC)
+        for index, market in enumerate(self.markets):
+            if market.instrument.market != "spot":
+                continue
+            proof = self.unit_verifications.get(market.instrument.key)
+            valid = (
+                proof
+                and proof.get("provider_symbol") == market.provider_symbol
+                and proof_valid(proof, now)
+            )
+            if proof and not valid:
+                self.unit_verifications.pop(market.instrument.key)
+            unit = "base" if valid else self.settings.coinalyze_spot_volume_unit
+            self.markets[index] = replace(market, volume_unit=unit)
+
+    def needs_calibration(self):
+        self.apply_verifications()
+        now = datetime.now(UTC)
+        due = self.last_calibration_at is None or now - self.last_calibration_at >= timedelta(
+            minutes=5
+        )
+        return due and any(
+            m.instrument.market == "spot"
+            and (
+                m.volume_unit == "unknown"
+                or m.instrument.key in self.unit_verifications
+                and now
+                - datetime.fromisoformat(self.unit_verifications[m.instrument.key]["verified_at"])
+                >= UNIT_RECHECK_AFTER
+            )
+            for m in self.markets
+        )
 
     def catalog(self):
         return {
@@ -224,6 +270,7 @@ class CoinalyzeSource:
                 for m in self.markets
             ],
             "missing_feeds": self.missing,
+            "unit_verifications": self.unit_verifications,
         }
 
     def metadata_observation(self):
@@ -247,6 +294,8 @@ class CoinalyzeSource:
         """Reject unit inference unless overlapping closed bars independently agree."""
         end = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=10)
         start = end - timedelta(minutes=5)
+        self.apply_verifications()
+        self.last_calibration_at = datetime.now(UTC)
 
         class Memory:
             def __init__(self):
@@ -257,7 +306,14 @@ class CoinalyzeSource:
                 return len(rows)
 
         for index, market in enumerate(self.markets):
-            if market.instrument.market != "spot" or market.volume_unit != "unknown":
+            proof = self.unit_verifications.get(market.instrument.key)
+            if market.instrument.market != "spot" or market.volume_unit != "unknown" and not proof:
+                continue
+            if (
+                proof
+                and datetime.now(UTC) - datetime.fromisoformat(proof["verified_at"])
+                < UNIT_RECHECK_AFTER
+            ):
                 continue
             evidence = {"verified": False, "start": start, "end": end}
             try:
@@ -266,6 +322,7 @@ class CoinalyzeSource:
                 await HistoryLoader(rest, direct).prices_and_flow(market.instrument, start, end)
                 reference = {r.event_time: r for r in direct.rows}
                 errors = []
+                checks = []
                 for row in provider:
                     other = reference.get(row.event_time)
                     if other is None:
@@ -277,24 +334,56 @@ class CoinalyzeSource:
                     if base <= 0:
                         continue
                     error = abs(row.payload["total_native"] - base) / base
+                    volume_error = error
+                    buy_error = None
                     # Binance additionally lets us verify the taker-buy field.
                     if "buy_base" in payload and row.payload["buy_native"] is not None:
-                        error = max(
-                            error, abs(row.payload["buy_native"] - payload["buy_base"]) / base
-                        )
+                        buy_error = abs(row.payload["buy_native"] - payload["buy_base"]) / base
+                        error = max(error, buy_error)
                     errors.append(error)
+                    checks.append(
+                        {
+                            "minute": row.event_time,
+                            "provider_total": row.payload["total_native"],
+                            "reference_base_volume": base,
+                            "volume_relative_error": volume_error,
+                            "buy_relative_error": buy_error,
+                        }
+                    )
                 verified = len(errors) >= 3 and max(errors) <= Decimal("0.000001")
                 evidence.update(
                     verified=verified,
                     matched_minutes=len(errors),
                     max_relative_error=max(errors) if errors else None,
+                    provider_minutes=len(provider),
+                    reference_minutes=len(reference),
+                    minute_checks=checks,
                 )
                 if verified:
                     self.markets[index] = replace(market, volume_unit="base")
+                    self.unit_verifications[market.instrument.key] = {
+                        "feed": market.instrument.key,
+                        "provider_symbol": market.provider_symbol,
+                        "verified_at": end.isoformat(),
+                        "evidence": evidence.copy(),
+                    }
+                elif len(errors) >= 3 and min(errors) >= Decimal("0.5"):
+                    # A consistent gross scale contradiction is not a transient outage.
+                    self.unit_verifications.pop(market.instrument.key, None)
+                    self.markets[index] = replace(market, volume_unit="unknown")
+                    evidence["reason"] = "contradictory_unit_scale"
+                else:
+                    evidence["reason"] = (
+                        "insufficient_time_matches" if len(errors) < 3 else "minute_volume_mismatch"
+                    )
             except CoinalyzeError:
                 raise
-            except Exception:
+            except Exception as exc:
                 evidence["reason"] = "direct_reference_unavailable"
+                evidence["error_type"] = type(exc).__name__
+                if isinstance(exc, httpx.HTTPStatusError):
+                    evidence["http_status"] = exc.response.status_code
+            evidence["unit_verified"] = market.instrument.key in self.unit_verifications
             self.calibration[market.instrument.key] = evidence
         self.calibration["funding"] = {
             "unit": self.funding_unit,
@@ -302,6 +391,7 @@ class CoinalyzeSource:
             if self.funding_unit == "percent"
             else "configured",
         }
+        self.apply_verifications()
         return self.calibration
 
     @staticmethod

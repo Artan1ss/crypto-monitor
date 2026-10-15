@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from btc_monitor.archive.types import serializable
 from btc_monitor.hourly.repository import alert_json
+from btc_monitor.hourly.review import review_bars
 from btc_monitor.hourly.service import hour
 
 WEB = Path(__file__).parent / "web"
@@ -32,8 +33,8 @@ def routes(monitor, repo):
     @router.get("/hourly/bars")
     async def bars(hours: int = Query(72, ge=1, le=168)):
         now = datetime.now(UTC)
-        return await repo.bars(
-            monitor.settings.hourly_source, hour(now) - timedelta(hours=hours), now
+        return await review_bars(
+            repo, monitor.settings.hourly_source, hour(now) - timedelta(hours=hours), now
         )
 
     @router.get("/hourly/signals")

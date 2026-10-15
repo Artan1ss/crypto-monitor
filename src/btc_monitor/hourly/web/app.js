@@ -103,10 +103,27 @@ function summary() {
   $("performance").textContent = evaluable.length
     ? `${evaluable.filter((s) => s.outcomes.windows["24"].verdict === "direction_supported").length} / ${evaluable.length} 实时样本`
     : "实时样本尚不足";
+  const repaired = state.bars.filter((b) => b.review_recovery).length;
   $("notice").textContent =
-    `${state.offline ? "离线文件；无法证明云端当前健康。 " : ""}1H 收盘后评估；生成箭头≠触发收盘点。${h.source === "direct" ? "固定 7 源直连" : "Coinalyze 固定 6 源，未包含 OKX 现货"}；费率是未统一周期、非 OI 加权的报告均值。${h.last_evaluation?.blocked ? " 当前阻断：" + h.last_evaluation.blocked : ""}${h.replay?.state === "running" ? " · 历史重建中" : ""}`;
+    `${state.offline ? "离线文件；无法证明云端当前健康。 " + (state.offlineData?.exported_at ? "快照时间 " + date(state.offlineData.exported_at) + "。 " : "") : ""}1H 收盘后评估；生成箭头≠触发收盘点。${h.source === "direct" ? "固定 7 源直连" : "Coinalyze 固定 6 源，未包含 OKX 现货"}；费率是未统一周期、非 OI 加权的报告均值。${repaired ? ` ${repaired} 个小时使用当时已有单位证据生成只读复盘修正版，历史决策未改。` : ""}${h.last_evaluation?.blocked ? " 当前阻断：" + h.last_evaluation.blocked : ""}${h.replay?.state === "running" ? " · 历史重建中" : ""}`;
   $("online").hidden = !state.offline;
   $("replay").disabled = state.offline || h.replay?.state === "running";
+}
+function cvdSeries(bars, market) {
+  let sum = 0,
+    prior = null;
+  return bars.map((b) => {
+    const flow = b.aggregated[market];
+    if (!(flow.complete ?? b.complete) || N(flow.delta_btc) === null) {
+      sum = 0;
+      prior = null;
+      return null;
+    }
+    if (prior !== b.start) sum = 0;
+    sum += N(flow.delta_btc);
+    prior = b.end;
+    return sum;
+  });
 }
 function draw() {
   const bars = state.bars;
@@ -135,22 +152,8 @@ function draw() {
     ["funding", "报告费率均值 · % · 非 OI 加权", 716, 45],
   ];
   const cumulative = { spot: [], linear: [] };
-  for (const market of ["spot", "linear"]) {
-    let sum = 0,
-      prior = null;
-    for (const b of bars) {
-      if (!b.complete || N(b.aggregated[market].delta_btc) === null) {
-        cumulative[market].push(null);
-        sum = 0;
-        prior = null;
-        continue;
-      }
-      if (prior !== b.start) sum = 0;
-      sum += N(b.aggregated[market].delta_btc);
-      cumulative[market].push(sum);
-      prior = b.end;
-    }
-  }
+  for (const market of ["spot", "linear"])
+    cumulative[market] = cvdSeries(bars, market);
   const selected = state.signals.find((s) => s.id === state.selected);
   const series = (key) =>
     bars.map((b, i) =>
@@ -230,6 +233,14 @@ function draw() {
       let path = "";
       vals.forEach((v, i) => {
         if (v === null) {
+          if (["spot", "linear"].includes(key)) {
+            const xx = x(bars[i].start),
+              width = plot / bars.length;
+            const label = "缺口 / 单位未确认";
+            svg += `<g><title>${esc(date(bars[i].start) + " " + label)}</title><rect x="${xx}" y="${top}" width="${width}" height="${height}" fill="#e6ba6c" opacity=".09"/></g>`;
+            if (i === 0 || vals[i - 1] !== null)
+              svg += text(xx + 3, top + 12, "缺口", colors.spot, 10);
+          }
           path += " ";
           return;
         }
@@ -242,6 +253,8 @@ function draw() {
         } else {
           const contiguous =
             i > 0 && vals[i - 1] !== null && bars[i - 1].end === bars[i].start;
+          if (i > 0 && !contiguous)
+            svg += text(xx + 3, top + 12, "重新累计", colors.spot, 10);
           path += `${contiguous ? "L" : "M"}${xx} ${y(v)} `;
         }
       });
@@ -277,13 +290,24 @@ function draw() {
     if (!b) return;
     const p = b.price;
     $("hover").textContent =
-      `${date(b.start)} ${p ? "O " + fmt(p.open) + " H " + fmt(p.high) + " L " + fmt(p.low) + " C " + fmt(p.close) : "价格缺失"} | 现货 Δ ${fmt(b.aggregated.spot.delta_btc)} BTC | 合约 Δ ${fmt(b.aggregated.linear.delta_btc)} BTC | ${b.complete ? "完整" : "缺口"}`;
+      `${date(b.start)} ${p ? "O " + fmt(p.open) + " H " + fmt(p.high) + " L " + fmt(p.low) + " C " + fmt(p.close) : "价格缺失"} | 现货 Δ ${fmt(b.aggregated.spot.delta_btc)} BTC | 合约 Δ ${fmt(b.aggregated.linear.delta_btc)} BTC | ${b.review_recovery ? "只读修正版·历史决策未改" : b.complete ? "完整" : "缺口"}${Object.entries(
+        b.flows || {},
+      )
+        .filter(([, v]) => !v.complete)
+        .map(
+          ([k, v]) =>
+            ` · ${k} ${v.observed_bars}/${v.expected_bars} ${v.quality_reasons?.join(",") || "单位未确认/数据不完整"}`,
+        )
+        .join("")}`;
     node.querySelector("#crosshair").setAttribute("d", `M${xx} 12V765`);
   });
 }
 function outcomeReturn(w) {
   if (!w || w.status !== "complete") return "尚未到期";
-  if (w.coverage !== "complete_minute_interior" || w.verdict === "insufficient_data")
+  if (
+    w.coverage !== "complete_minute_interior" ||
+    w.verdict === "insufficient_data"
+  )
     return "数据不足，未判定";
   return `方向变动 ${fmt(w.signed_return_pct)}%`;
 }
@@ -448,10 +472,11 @@ async function refresh() {
       get(`/hourly/signals?hours=${h}&limit=500`),
       get("/hourly/health"),
     ]);
+    if (state.offline) return;
     Object.assign(state, { bars, signals, health });
     render();
   } catch (e) {
-    $("status").textContent = e.message;
+    if (!state.offline) $("status").textContent = e.message;
   }
 }
 function render() {

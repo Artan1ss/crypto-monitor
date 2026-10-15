@@ -117,6 +117,25 @@ missing feeds, calibration, per-series returned counts and request/symbol costs.
 Transport freshness (`healthy`) is separate from full requested coverage
 (`coverage_complete`). Known missing markets/sparse series are not hidden.
 
+### Unit calibration recovery
+
+Spot units are not inferred from candle direction or assumed from a partial sum.
+The exact comparison still requires at least three aligned minutes, with maximum
+relative volume/taker-buy error at most `0.000001` (0.0001%). A temporary reference
+outage or a differing provider minute is **not** proof that BTC units became quote
+units. Previously the daily catalog refresh/restart discarded successful verification;
+one failed probe could therefore create a full hour of unknown/mixed units even with
+60/60 minute bars. A single failed startup probe also was not retried until refresh.
+
+Successful evidence is now recovered from append-only metadata, bound to the exact
+feed and provider symbol, and valid for at most 48 hours from its original reference
+window. It is rechecked after 24 hours; unsuccessful probes retry at most every five
+minutes. Refreshing/restoring a certificate never extends its original expiry. A
+transport error retains a still-valid certificate but records the failed attempt;
+expiry, market remapping, or consistently gross scale contradictions revoke it.
+`normalization_ready` and `unverified_unit_feeds` are separate from transport health.
+No strategy thresholds were changed and the exact-match tolerance was not loosened.
+
 ## Replay and limitations
 
 Existing export/replay commands include these observations. See

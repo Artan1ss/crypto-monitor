@@ -47,7 +47,9 @@ test("plain and gzip review imports preserve all snapshot fields", async () => {
   ]) {
     const blob = new Blob([bytes]);
     assert.equal(
-      JSON.stringify(await read({ name, size: blob.size, stream: () => blob.stream() })),
+      JSON.stringify(
+        await read({ name, size: blob.size, stream: () => blob.stream() }),
+      ),
       JSON.stringify(payload),
     );
   }
@@ -79,10 +81,35 @@ test("offline time range slices bars and signals without network requests", () =
 
 test("partial paths are never labelled as finished horizon returns", () => {
   const format = vm.runInContext("outcomeReturn", sandbox());
-  assert.equal(format({ status: "pending", signed_return_pct: "2.39" }), "尚未到期");
-  assert.equal(format({ status: "complete", coverage: "incomplete" }), "数据不足，未判定");
+  assert.equal(
+    format({ status: "pending", signed_return_pct: "2.39" }),
+    "尚未到期",
+  );
+  assert.equal(
+    format({ status: "complete", coverage: "incomplete" }),
+    "数据不足，未判定",
+  );
   assert.match(
-    format({ status: "complete", coverage: "complete_minute_interior", signed_return_pct: "1" }),
+    format({
+      status: "complete",
+      coverage: "complete_minute_interior",
+      signed_return_pct: "1",
+    }),
     /1\.00%/,
   );
+});
+
+test("spot gaps cannot interrupt valid futures and gaps reset only their own series", () => {
+  const calculate = vm.runInContext("cvdSeries", sandbox());
+  const bars = [0, 1, 2].map((i) => ({
+    start: String(i),
+    end: String(i + 1),
+    complete: i !== 1,
+    aggregated: {
+      spot: { complete: i !== 1, delta_btc: i === 1 ? null : 2 },
+      linear: { complete: true, delta_btc: 3 },
+    },
+  }));
+  assert.equal(JSON.stringify(calculate(bars, "spot")), "[2,null,2]");
+  assert.equal(JSON.stringify(calculate(bars, "linear")), "[3,6,9]");
 });
