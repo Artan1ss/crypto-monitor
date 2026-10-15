@@ -115,8 +115,8 @@ class HourlyMonitor:
                             self.bootstrap_done = True
                         else:
                             await self.process(last_end - timedelta(hours=1), now, True, lease)
-                        await self.deliver_outbox(now, lease)
-                        await self.update_outcomes(now)
+                        await self.deliver_outbox(datetime.now(UTC), lease)
+                        await self.update_outcomes(datetime.now(UTC))
                         self.last_success, self.last_error = datetime.now(UTC), None
             except asyncio.CancelledError:
                 raise
@@ -224,6 +224,17 @@ class HourlyMonitor:
         for alert in await self.repo.pending_deliveries():
             if now - alert.generated_at > timedelta(minutes=10):
                 await self.repo.set_delivery(alert.id, "stale_delivery", expected="pending")
+                continue
+            price, observed = await self.repo.entry_sample(now)
+            if price is None or observed is None:
+                await self.repo.set_delivery(alert.id, "missing_fresh_delivery", expected="pending")
+                continue
+            if (alert.direction == "LONG" and price <= alert.invalidation) or (
+                alert.direction == "SHORT" and price >= alert.invalidation
+            ):
+                await self.repo.set_delivery(
+                    alert.id, "invalidated_before_delivery", expected="pending"
+                )
                 continue
             # Verify physical lock ownership before external effects.
             await lease.exec_driver_sql("SELECT 1")

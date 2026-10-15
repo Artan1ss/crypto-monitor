@@ -1,4 +1,6 @@
 import copy
+import gzip
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -334,7 +336,9 @@ def test_outcome_gap_is_not_a_win_and_future_data_ignored():
 
 async def test_durable_outbox_uncertainty_and_no_automatic_resend():
     repo = SimpleNamespace(
-        pending_deliveries=AsyncMock(), set_delivery=AsyncMock(return_value=True)
+        pending_deliveries=AsyncMock(),
+        set_delivery=AsyncMock(return_value=True),
+        entry_sample=AsyncMock(return_value=(D(100), START)),
     )
     a = alert()
     a.tier = "WATCH"
@@ -368,6 +372,25 @@ async def test_retrospective_job_does_not_send_and_stale_delivery_is_suppressed(
     try:
         await monitor.deliver_outbox(START + timedelta(hours=1), None)
         assert repo.set_delivery.call_args.args[1] == "stale_delivery"
+        monitor.telegram.send.assert_not_awaited()
+    finally:
+        await monitor.stop()
+
+
+@pytest.mark.parametrize(
+    "price,state", [(None, "missing_fresh_delivery"), (D(97), "invalidated_before_delivery")]
+)
+async def test_outbox_rechecks_fresh_price_and_invalidation_before_sending(price, state):
+    repo = SimpleNamespace(
+        pending_deliveries=AsyncMock(return_value=[alert()]),
+        set_delivery=AsyncMock(),
+        entry_sample=AsyncMock(return_value=(price, START if price is not None else None)),
+    )
+    monitor = HourlyMonitor(config(hourly_telegram_enabled=True), repo)
+    monitor.telegram.send = AsyncMock()
+    try:
+        await monitor.deliver_outbox(START, None)
+        assert repo.set_delivery.call_args.args[1] == state
         monitor.telegram.send.assert_not_awaited()
     finally:
         await monitor.stop()
@@ -464,3 +487,13 @@ def test_export_never_overwrites_existing_file(tmp_path):
     with pytest.raises(TypeError):
         save_export(invalid, {"unsupported": object()})
     assert not invalid.exists()
+
+
+def test_compressed_review_export_is_lossless(tmp_path):
+    payload = {"schema": "btc-hourly-review-v1", "signals": [{"id": uuid4(), "reason": "量价背离"}]}
+    path = tmp_path / "review.json.gz"
+    save_export(path, payload)
+    with gzip.open(path, "rt", encoding="utf-8") as stream:
+        result = json.load(stream)
+    assert result["signals"][0]["id"] == str(payload["signals"][0]["id"])
+    assert result["signals"][0]["reason"] == "量价背离"

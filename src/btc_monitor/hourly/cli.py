@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import gzip
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,9 +15,13 @@ from btc_monitor.hourly.service import HourlyMonitor, hour
 
 
 def save_export(output, payload):
-    encoded = json.dumps(serializable(payload), ensure_ascii=False)
+    encoded = json.dumps(serializable(payload), ensure_ascii=False).encode("utf-8")
+    if len(encoded) > 50 * 1024 * 1024:
+        raise ValueError("Export exceeds the dashboard's 50 MiB decoded limit")
     path = Path(output).resolve()
-    with path.open("x", encoding="utf-8") as stream:
+    if path.suffix.lower() == ".gz":
+        encoded = gzip.compress(encoded, mtime=0)
+    with path.open("xb") as stream:
         stream.write(encoded)
     return str(path)
 

@@ -67,6 +67,8 @@ Acknowledged sends become `sent`; network uncertainty becomes `uncertain`. Autom
 resends are deliberately disabled after an ambiguous attempt because Telegram offers
 no idempotency key. A crash after transmission can therefore leave `attempted`; it is
 not falsely marked delivered. Pending messages older than ten minutes are suppressed.
+Delivery also requires a fresh ticker and a price still inside the invalidation level;
+otherwise the record is retained with an explicit suppression reason, without a TG send.
 Monitor errors and delivery states are visible; this is not an exactly-once guarantee.
 
 ## Evidence and outcomes
@@ -88,6 +90,7 @@ intraminute order are unknown; two simultaneous touches are `ambiguous_same_minu
 Gaps make the verdict `insufficient_data`. Direction is supported/opposed only with
 complete minute-interior coverage and a fresh endpoint, outside a 0.05% flat band.
 This is not simulated execution or realized profitability; no fees or fills are claimed.
+The dashboard does not label partial or gapped paths as completed horizon returns.
 
 ## Configuration / private access
 
@@ -134,6 +137,7 @@ The UI ships local assets only, with no external chart CDN or third-party analyt
 ```powershell
 python -m btc_monitor.hourly.cli replay --hours 72
 python -m btc_monitor.hourly.cli export --hours 72 --output .research-data/h1-review.json
+python -m btc_monitor.hourly.cli export --hours 72 --output .research-data/h1-review.json.gz
 ```
 
 Replay can also be started by the dashboard (authenticated same-origin JSON POST).
@@ -144,7 +148,9 @@ Replay also loads the preceding 24H baseline and can re-evaluate cached feature 
 with this additional decision-time context. It never changes pinned input bars or
 existing signal snapshots, and uniqueness prevents duplicate signal records.
 The CLI file includes chart features and complete signal feature snapshots, not every
-raw minute. Individual signal HTTP exports additionally contain all raw inputs.
+raw minute. The `.gz` suffix enables lossless gzip compression; the dashboard accepts
+either JSON or gzip and enforces a 50 MiB limit before and during decompression.
+Individual signal HTTP exports additionally contain all raw inputs.
 Use “导入离线复盘” for a file exported from the cloud: it is explicitly offline, stops
 live refresh, and never sends messages or writes to the backend. Downloading a selected
 offline signal exports the imported snapshot only; it cannot magically retrieve cloud
