@@ -55,6 +55,20 @@ class HourlyAlertRecord(Base):
     delivery_id: Mapped[str | None] = mapped_column(String(64))
 
 
+class HourlyOutcomeRevision(Base):
+    """Append-only outcome/scoring evidence; original alert snapshots never change."""
+
+    __tablename__ = "hourly_outcome_revisions"
+    __table_args__ = (
+        UniqueConstraint("alert_id", "fingerprint"),
+        Index("ix_hourly_revision_alert", "alert_id", "id"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    alert_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
 class MarketObservation(Base):
     """Append-only research archive. Never participates in V1 signal evaluation."""
 

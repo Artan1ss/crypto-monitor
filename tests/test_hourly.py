@@ -395,10 +395,14 @@ def test_outcomes_ambiguous_same_minute_and_actual_generation_boundary():
     assert result["windows"]["1"]["verdict"] == "direction_supported"
 
 
-def test_outcome_gap_is_not_a_win_and_future_data_ignored():
+def test_endpoint_direction_independent_of_gap_and_future_data_ignored():
     rows = price_rows(missing=20)
     result = track(alert(), rows, START + timedelta(hours=1, minutes=3))
-    assert result["windows"]["1"]["verdict"] == "insufficient_data"
+    w = result["windows"]["1"]
+    assert w["verdict"] == "direction_supported"
+    assert w["coverage"] == "incomplete"
+    assert w["touch_order"] == "ambiguous_same_minute"
+    assert w["scores"]["structure_score"] is None
     future = copy.deepcopy(rows[0])
     future["event_time"] = START + timedelta(days=2)
     future["end_time"] = future["event_time"] + timedelta(minutes=1)
@@ -538,7 +542,11 @@ async def test_signal_detail_and_raw_export_support_uuid_decimal_and_time():
         delivery_at=None,
         snapshot={"candidate": {"kind": "cvd_divergence", "reasons": ["test"]}, "input_ids": []},
     )
-    repo = SimpleNamespace(alert=AsyncMock(return_value=row), raw_inputs=AsyncMock(return_value=[]))
+    repo = SimpleNamespace(
+        alert=AsyncMock(return_value=row),
+        raw_inputs=AsyncMock(return_value=[]),
+        outcome_revisions=AsyncMock(return_value=[]),
+    )
     app = FastAPI()
     app.include_router(routes(SimpleNamespace(), repo))
     async with httpx.AsyncClient(

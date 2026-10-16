@@ -78,6 +78,23 @@ async def test_hourly_feature_immutability_and_restart_persistence():
             row = await recovered.alert(alert_id)
             assert row.outcomes == result and row.tracking_complete
             assert row.snapshot == {"input_ids": [1]}
+            # A legacy "finished" result is eligible for version upgrade, not frozen forever.
+            candidates = await repo.outcome_candidates("coinalyze", start + timedelta(days=2))
+            assert alert_id in {r.id for r in candidates}
+            repaired = {
+                "version": "h1-path-v2",
+                "updated_at": (start + timedelta(days=2)).isoformat(),
+                "windows": {"24": {"coverage": "complete_minute_interior"}},
+            }
+            await repo.save_outcomes(alert_id, repaired, True)
+            await repo.save_outcomes(
+                alert_id, {**repaired, "updated_at": (start + timedelta(days=3)).isoformat()}, True
+            )
+            revisions = await recovered.outcome_revisions(alert_id)
+            assert len(revisions) == 2 and revisions[-1]["result"] == result
+            assert (await recovered.alert(alert_id)).snapshot == {"input_ids": [1]}
+            candidates = await repo.outcome_candidates("coinalyze", start + timedelta(days=3))
+            assert alert_id not in {r.id for r in candidates}
             await transaction.rollback()
     finally:
         await database.close()

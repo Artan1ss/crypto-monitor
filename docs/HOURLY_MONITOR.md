@@ -188,3 +188,75 @@ latency and data coverage alongside directional outcome counts. Do not tune on o
 
 Primary references: [Coinalyze API](https://api.coinalyze.net/v1/doc/) and
 [HTTP authentication / HTTPS requirement](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Authentication).
+# 路径复盘与评分 v2
+
+本次调整只影响独立 1H 模块的证据展示/追踪，不改变触发阈值、冷却、方向或 V1 的 0–8 分策略。
+
+## 发出时证据置信分
+
+`h1-evidence-score-v1` 为可解释、未经胜率校准的 0–100 规则分：价格拒绝/回踩确认
+25，摆动点背离20（仅滚动背离12），现货压力15，现货源方向一致性15，成交量10，
+合约背景10，OI/费率背景5。现货压力项按 `min(1, 同向压力/(2×现有压力阈值))` 线性计分；
+一致性按同向现货源比例；量比从1倍到1.5倍线性增加；合约同向或其压力绝对值不及现货
+同向压力一半得背景10分；OI增加且报告费率偏反方向得背景5分，不能据此推断多空持仓。
+缺少必要方向/现货压力时不评分。分数不参与触发或过滤，不是成功概率，也不是仓位建议。
+
+新信号在原始快照内冻结分数、版本、分项，仅使用原始决策输入，Telegram 同时显示。
+旧信号仅从原快照派生分数，标记 `historical_snapshot_rescore`，不回写原快照，不补发通知。
+
+## 方向与结构独立
+
+1/4/12/24H 各保存：
+
+- **方向结果**：即使途中有缺口，只要目标窗口的最后一个完整分钟收盘存在，仍可计算
+  终点变动。没有终点分钟不能用更早价格冒充。生成时间有秒数时显式保留终点边界秒差；
+  这不是精确到秒的收益。
+- **方向分**：`clip(50+25×终点方向R,0,100)`，0R为50，+2R为100，-2R为0。
+  未到期时是进行中评分，到期后才是窗口方向结果；缺少终点则留空。
+- **结构分**：可证明先到1R为100，先到失效为0，到期完整路径均未到为50；同分钟双触及、
+  首次事件之前缺口或无法排除起始分钟触及时留空。后来的大跌不能推翻已经先失效的事实。
+- **分钟覆盖分**：合格完整分钟数/预期完整分钟数×100，只衡量覆盖率，不是置信概率。
+- **极值下界**：已有分钟内的最大有利/不利美元波动，未扣交易成本；缺口或起始非完整分钟
+  的极值可能更大。不是交易盈亏。
+
+不再用 `unknown_due_to_gaps` 统一否决所有结果：缺口在首次已知触及之后不影响“谁先到”
+的证明；缺口在之前则保留 `unresolved_missing_prefix`，同时展示已观察次序与事件时间，
+不冒充完整证明。生成时间不是整分钟时，如该分钟高低价均未触及1R/失效，可排除起始
+分钟风险；否则为 `unresolved_partial_start_minute`。同分钟双触及仍不猜测先后。
+
+## 补采、重试与审计
+
+只用 Bybit BTCUSDT linear 的完整1分钟 OHLC 复盘，支持 `live` 和官方 `rest_history`。
+官方完整历史K线优先作为价格证据，能够修复直连逐笔流的不完整分钟；不会修复 CVD，
+不替换成其他交易所，也不把不存在的分钟补零。记录未来可用时间、异常OHLC、错误交易对
+均不纳入。每个窗口展示具体缺失分钟、排除原因、原始输入ID和历史价格输入ID。
+
+在线追踪每轮最多20条（按最早更新时间公平排序）；每条最多查询其24H窗口，最多50000条
+输入，超过上限报错而不静默截断。自动补采全局至多每5分钟一次，每次最多200分钟、15秒
+超时，同一信号每6小时最多一次；受403等访问限制时记录类型/状态，不记录响应体或凭据。
+最近7天内已到期但不完整的结果每6小时可重新计算；旧版本结果（包括原来已结束的）也会
+自动升级。原始快照不改写，前后结果保存在 `hourly_outcome_revisions`，相同语义结果去重。
+复算不会触发 Telegram，部署须先执行 `python -m alembic upgrade head`。
+
+手动复算最多500条最早更新的记录（可重复执行推进批次），不会发送通知：
+
+```powershell
+python -m btc_monitor.hourly.cli retrack
+# 可选：允许按以上限额尝试公开历史价格补采
+python -m btc_monitor.hourly.cli retrack --repair
+```
+
+单条导出现在同时包含快照、最新结果、最近200个修订与它们使用的价格/质量原始输入；
+完整修订保留在数据库，不因导出上限删除。
+
+本地也可用导出原始路径验证新算法，不写云端、不发通知：
+
+```powershell
+python -m btc_monitor.hourly.evidence --review review.json.gz --path-evidence path.json.gz --output verified.json.gz
+# 可选：本地读取官方公开历史价格，最多8个有界请求/信号；证据只保存在离线文件
+python -m btc_monitor.hourly.evidence --review review.json.gz --path-evidence path.json.gz --repair-prices --output repaired.json.gz
+```
+
+路径文件应含 `signal`、`rows`（完整原始记录）和 `queried_at`，原快照/参考价必须与复盘
+文件相同。补采记录保留在 `local_price_evidence`，使用由内容指纹生成的负数本地证据ID，
+不能误认为云端数据库ID。输出注明验证信号范围及本地验证状态，其他信号结果不伪装为已复算。

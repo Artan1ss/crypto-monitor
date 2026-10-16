@@ -35,7 +35,13 @@ async def execute(args):
     try:
         now = datetime.now(UTC)
         end = hour(now - timedelta(seconds=settings.hourly_decision_delay_seconds))
-        if args.command == "replay":
+        if args.command == "retrack":
+            async with repo.lease() as lease:
+                if lease is None:
+                    raise RuntimeError("Hourly writer busy; retry after current cycle")
+                await monitor.update_outcomes(now, force=True, repair=args.repair)
+            print(json.dumps({"state": "complete", "notifications": False, "limit": 500}))
+        elif args.command == "replay":
             async with repo.lease() as lease:
                 if lease is None:
                     raise RuntimeError("Hourly writer busy; retry after current cycle")
@@ -79,6 +85,12 @@ async def execute(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    retrack = sub.add_parser(
+        "retrack", help="Recompute up to 500 oldest outcome records without notifications"
+    )
+    retrack.add_argument(
+        "--repair", action="store_true", help="Attempt bounded public Bybit price gap repair"
+    )
     for name in ("replay", "export"):
         item = sub.add_parser(name)
         item.add_argument("--hours", type=int, choices=range(30, 169), default=72)

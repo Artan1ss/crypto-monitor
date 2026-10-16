@@ -58,11 +58,26 @@ def routes(monitor, repo):
         if not row:
             raise HTTPException(404, "Signal not found")
         try:
-            raw = await repo.raw_inputs(row.snapshot["input_ids"])
+            revisions = await repo.outcome_revisions(signal_id)
+            ids = set(row.snapshot["input_ids"])
+            for outcome in [row.outcomes] + [r["result"] for r in revisions]:
+                for w in (outcome or {}).get("windows", {}).values():
+                    ids.update(w.get("input_ids", []))
+                    ids.update(w.get("quality_gap_ids", []))
+                    if w.get("boundary_input_id"):
+                        ids.add(w["boundary_input_id"])
+            raw = await repo.raw_inputs(sorted(ids))
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
         return JSONResponse(
-            serializable({"signal": alert_json(row, True), "raw_inputs": raw}),
+            serializable(
+                {
+                    "signal": alert_json(row, True),
+                    "raw_inputs": raw,
+                    "outcome_revisions": revisions,
+                    "revision_limit": 200,
+                }
+            ),
             headers={"Content-Disposition": f'attachment; filename="h1-{signal_id}.json"'},
         )
 

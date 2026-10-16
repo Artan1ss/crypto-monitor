@@ -48,6 +48,17 @@ const verdict = {
   insufficient_data: "数据不足",
   flat: "横盘",
 };
+const touchLabels = {
+  target_first: "已证实：1R 先于失效",
+  invalidation_first: "已证实：失效先于1R",
+  target_only: "已证实先到1R；目前只观察到目标触及",
+  invalidation_only: "已证实先到失效；目前只观察到失效触及",
+  ambiguous_same_minute: "同一分钟同时触及，分钟内次序不明",
+  neither: "完整分钟路径内均未触及",
+  unresolved_missing_prefix: "首次已知触及之前存在缺口，首次次序未确定",
+  unresolved_partial_start_minute: "起始分钟内路径不确定",
+  unknown_due_to_gaps: "旧版结果：路径有缺口，需重新计算",
+};
 const delivery = {
   sent: "已发 TG",
   retrospective: "未发送·历史重建",
@@ -106,6 +117,9 @@ function summary() {
   const repaired = state.bars.filter((b) => b.review_recovery).length;
   $("notice").textContent =
     `${state.offline ? "离线文件；无法证明云端当前健康。 " + (state.offlineData?.exported_at ? "快照时间 " + date(state.offlineData.exported_at) + "。 " : "") : ""}1H 收盘后评估；生成箭头≠触发收盘点。${h.source === "direct" ? "固定 7 源直连" : "Coinalyze 固定 6 源，未包含 OKX 现货"}；费率是未统一周期、非 OI 加权的报告均值。${repaired ? ` ${repaired} 个小时使用当时已有单位证据生成只读复盘修正版，历史决策未改。` : ""}${h.last_evaluation?.blocked ? " 当前阻断：" + h.last_evaluation.blocked : ""}${h.replay?.state === "running" ? " · 历史重建中" : ""}`;
+  if (state.offlineData?.local_verification && state.offline)
+    $("notice").textContent +=
+      ` 本地新算法验证，尚未部署；${state.offlineData.verified_signal_ids?.length || 0} 条信号使用导出的原始分钟数据复算，其余仍为原导出结果。`;
   $("online").hidden = !state.offline;
   $("replay").disabled = state.offline || h.replay?.state === "running";
 }
@@ -305,7 +319,9 @@ function draw() {
 function outcomeReturn(w) {
   if (!w || w.status !== "complete") return "尚未到期";
   if (
-    w.coverage !== "complete_minute_interior" ||
+    (w.endpoint_exact === undefined &&
+      w.coverage !== "complete_minute_interior") ||
+    w.endpoint_exact === false ||
     w.verdict === "insufficient_data"
   )
     return "数据不足，未判定";
@@ -319,10 +335,10 @@ function ledger() {
     row.className = "signal-row" + (s.id === state.selected ? " selected" : "");
     const parts = [
       `${date(s.generated_at)}<small>${s.origin === "live" ? "实时记录" : "历史重建 · 非实时通知"}</small>`,
-      `<span class="${s.direction === "SHORT" ? "short" : "long"}">${s.direction} · ${s.tier === "WATCH" ? "观察" : "确认"}</span><small>${esc(s.kind)}</small>`,
+      `<span class="${s.direction === "SHORT" ? "short" : "long"}">${s.direction} · ${s.tier === "WATCH" ? "观察" : "确认"}</span><small>${esc(s.kind)} · 证据分 ${fmt(s.confidence?.score ?? s.outcomes?.confidence?.score, 0)}</small>`,
       esc(s.reasons.join(" / ")),
       `$${fmt(s.entry)}<small>${esc(delivery[s.delivery_state] || s.delivery_state)}</small>`,
-      `${esc(verdict[s.outcomes?.windows?.["24"]?.verdict] || "追踪中")}<small>24H ${outcomeReturn(s.outcomes?.windows?.["24"])}</small>`,
+      `${esc(verdict[s.outcomes?.windows?.["24"]?.verdict] || "追踪中")}<small>24H ${outcomeReturn(s.outcomes?.windows?.["24"])}</small><small>结构分 ${s.outcomes?.windows?.["24"]?.scores?.structure_score == null ? "未确定" : fmt(s.outcomes.windows["24"].scores.structure_score, 0)}</small>`,
     ];
     for (const p of parts) {
       const span = document.createElement("span");
@@ -378,6 +394,42 @@ async function select(id) {
   row("投递状态", delivery[s.delivery_state] || s.delivery_state);
   row("参考价格", "$" + fmt(s.entry));
   row("结构失效", "$" + fmt(s.invalidation));
+  const confidence =
+    s.confidence || s.snapshot?.confidence || s.outcomes?.confidence;
+  if (confidence) {
+    row("发出时证据置信分（非胜率）", `${fmt(confidence.score, 0)} / 100`);
+    row(
+      "评分来源",
+      (s.confidence_origin || s.outcomes?.confidence_origin) === "at_generation"
+        ? "发出时保存"
+        : "按原始快照事后补算，未使用后续价格",
+    );
+    const parts = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "查看置信分拆解 · " + confidence.version;
+    parts.append(summary);
+    for (const component of confidence.components || []) {
+      const p = document.createElement("p");
+      p.textContent = `${component.label}：${component.points} / ${component.max}`;
+      parts.append(p);
+    }
+    node.append(parts);
+  } else row("发出时证据置信分", "旧文件未含评分，请导出新版复盘文件");
+  const review24 = s.outcomes?.windows?.["24"];
+  if (review24?.scores) {
+    row(
+      "24H复盘分（方向 / 结构）",
+      `${fmt(review24.scores.direction_score, 1)} / ${review24.scores.structure_score == null ? "未确定" : fmt(review24.scores.structure_score, 0)}${review24.scores.provisional ? " · 进行中" : ""}`,
+    );
+    row(
+      "24H完整分钟",
+      `${review24.observed_minutes} / ${review24.expected_minutes}`,
+    );
+    row(
+      "24H结构结果",
+      touchLabels[review24.touch_order] || review24.touch_order,
+    );
+  }
   if (d) {
     const flowWindow = `${s.snapshot.parameters.flow_hours}H`;
     row(`现货 ${flowWindow} ΔCVD`, fmt(d.spot_delta_btc) + " BTC");
@@ -418,12 +470,78 @@ async function select(id) {
         `${w.observed_minutes}/${w.expected_minutes} 分钟 · ${w.coverage}`,
       );
       row(
+        "完整分钟覆盖分",
+        w.data_quality_score == null
+          ? "旧版未计算"
+          : `${fmt(w.data_quality_score)} / 100`,
+      );
+      row(
+        "终点方向分 / 结构结果分",
+        w.scores
+          ? `${w.scores.direction_score == null ? "未确定" : fmt(w.scores.direction_score, 1)} / ${w.scores.structure_score == null ? "未确定" : fmt(w.scores.structure_score, 0)}（各满分100${w.scores.provisional ? "，进行中" : ""}）`
+          : "旧版未计算",
+      );
+      if (w.scores && hours === "1") {
+        const explanation = document.createElement("p");
+        explanation.className = "muted";
+        explanation.textContent = w.scores.notice;
+        node.append(explanation);
+      }
+      if (w.endpoint_exact !== undefined)
+        row(
+          "终点价格时间",
+          w.endpoint_exact
+            ? `${date(w.endpoint_at)} · 截至该完整分钟收盘${w.endpoint_boundary_seconds ? `（距窗口边界 ${fmt(w.endpoint_boundary_seconds, 1)} 秒）` : ""}`
+            : "缺少窗口终点分钟，方向分暂不计算",
+        );
+      row(
         "有利/不利极值下界",
         `${fmt(w.mfe_usdt_lower_bound)} / ${fmt(w.mae_usdt_lower_bound)}`,
       );
-      row("1R / 失效触及次序", w.touch_order);
+      row("1R / 失效首次次序", touchLabels[w.touch_order] || w.touch_order);
+      if (w.observed_touch_order && !w.touch_order_proven)
+        row(
+          "仅按已有分钟观察（非完整证明）",
+          (
+            touchLabels[w.observed_touch_order] || w.observed_touch_order
+          ).replace("已证实", "已观察"),
+        );
+      for (const [name, hit] of Object.entries(w.first_touches || {}))
+        row(
+          `已知 ${name === "invalidation" ? "失效" : name} 触及`,
+          `${date(hit.from)}–${date(hit.to)}`,
+        );
+      if (w.partial_start_minute)
+        row(
+          "起始分钟",
+          w.start_boundary_clear
+            ? "整分钟高低价证明该分钟未触及1R/失效"
+            : "只使用生成后完整分钟，起始分钟先后关系未确定",
+        );
+      if (w.missing_minutes?.length) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `缺失/不合格分钟 ${w.missing_minutes.length} 个（多伦多时间）`;
+        details.append(summary);
+        for (const missing of w.missing_minutes) {
+          const line = document.createElement("div");
+          line.textContent = `${date(missing.start)} · ${missing.reason}`;
+          details.append(line);
+        }
+        node.append(details);
+      }
+      if (w.price_repair_ids?.length)
+        row(
+          "历史价格补采",
+          `${w.price_repair_ids.length} 分钟 · 仅修复复盘，非当时实时数据`,
+        );
     }
   }
+  if (s.outcomes?.repair)
+    row(
+      "最近价格补采",
+      `${s.outcomes.repair.state} · ${date(s.outcomes.repair.attempted_at)}${s.outcomes.repair.http_status ? ` · HTTP ${s.outcomes.repair.http_status}` : ""}`,
+    );
   const disclaimer = document.createElement("p");
   disclaimer.className = "muted";
   disclaimer.textContent =

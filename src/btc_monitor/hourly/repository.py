@@ -1,10 +1,19 @@
+import hashlib
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, text, update
+from sqlalchemy import or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from btc_monitor.models import HourlyAlertRecord, HourlyBarRecord, MarketObservation, TickerSnapshot
+from btc_monitor.hourly.scoring import confidence
+from btc_monitor.models import (
+    HourlyAlertRecord,
+    HourlyBarRecord,
+    HourlyOutcomeRevision,
+    MarketObservation,
+    TickerSnapshot,
+)
 
 
 class HourlyRepository:
@@ -42,7 +51,11 @@ class HourlyRepository:
         if source == "coinalyze":
             query = query.where(MarketObservation.source_type == "coinalyze_history")
         elif source == "direct":
-            query = query.where(MarketObservation.source_type == "live")
+            query = query.where(
+                MarketObservation.source_type.in_(["live", "rest_history"])
+                if price_only
+                else MarketObservation.source_type == "live"
+            )
         if price_only:
             query = query.where(
                 MarketObservation.venue == "bybit",
@@ -181,11 +194,69 @@ class HourlyRepository:
 
     async def save_outcomes(self, alert_id, result, complete):
         async with self.db.session() as session:
+            previous = await session.scalar(
+                select(HourlyAlertRecord.outcomes).where(HourlyAlertRecord.id == alert_id)
+            )
+            for value in (previous, result):
+                if value is None:
+                    continue
+                semantic = {k: v for k, v in value.items() if k not in {"updated_at", "repair"}}
+                digest = hashlib.sha256(json.dumps(semantic, sort_keys=True).encode()).hexdigest()
+                await session.execute(
+                    insert(HourlyOutcomeRevision)
+                    .values(alert_id=alert_id, fingerprint=digest, result=value)
+                    .on_conflict_do_nothing(index_elements=["alert_id", "fingerprint"])
+                )
             await session.execute(
                 update(HourlyAlertRecord)
                 .where(HourlyAlertRecord.id == alert_id)
                 .values(outcomes=result, tracking_complete=complete)
             )
+
+    async def outcome_candidates(self, source, now, force=False):
+        from btc_monitor.hourly.outcomes import VERSION
+
+        query = select(HourlyAlertRecord).where(HourlyAlertRecord.source == source)
+        if not force:
+            query = query.where(
+                or_(
+                    HourlyAlertRecord.outcomes.is_(None),
+                    HourlyAlertRecord.outcomes["version"].astext.is_distinct_from(VERSION),
+                    HourlyAlertRecord.tracking_complete.is_(False),
+                    (HourlyAlertRecord.generated_at >= now - timedelta(days=7))
+                    & (
+                        HourlyAlertRecord.outcomes["windows"]["24"]["coverage"].astext
+                        == "incomplete"
+                    )
+                    & (
+                        HourlyAlertRecord.outcomes["updated_at"].astext
+                        < (now - timedelta(hours=6)).isoformat()
+                    ),
+                )
+            )
+        async with self.db.session() as session:
+            return list(
+                (
+                    await session.scalars(
+                        query.order_by(
+                            HourlyAlertRecord.outcomes["updated_at"].astext.asc().nullsfirst(),
+                            HourlyAlertRecord.generated_at.asc(),
+                        ).limit(20 if not force else 500)
+                    )
+                ).all()
+            )
+
+    async def outcome_revisions(self, alert_id):
+        async with self.db.session() as session:
+            rows = (
+                await session.scalars(
+                    select(HourlyOutcomeRevision)
+                    .where(HourlyOutcomeRevision.alert_id == alert_id)
+                    .order_by(HourlyOutcomeRevision.id.desc())
+                    .limit(200)
+                )
+            ).all()
+        return [{"id": r.id, "fingerprint": r.fingerprint, "result": r.result} for r in rows]
 
     async def entry_sample(self, now):
         async with self.db.session() as session:
@@ -271,6 +342,10 @@ def alert_json(row, detail=False):
     }
     value["kind"] = row.snapshot["candidate"]["kind"]
     value["reasons"] = row.snapshot["candidate"]["reasons"]
+    value["confidence"] = row.snapshot.get("confidence") or confidence(row.snapshot)
+    value["confidence_origin"] = (
+        "at_generation" if "confidence" in row.snapshot else "historical_snapshot_rescore"
+    )
     if detail:
         value["snapshot"] = row.snapshot
     return value

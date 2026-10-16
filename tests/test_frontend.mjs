@@ -97,6 +97,20 @@ test("partial paths are never labelled as finished horizon returns", () => {
     }),
     /1\.00%/,
   );
+  assert.match(
+    format({
+      status: "complete",
+      coverage: "incomplete",
+      endpoint_exact: true,
+      verdict: "direction_supported",
+      signed_return_pct: "1",
+    }),
+    /1\.00%/,
+  );
+  assert.equal(
+    format({ status: "complete", endpoint_exact: false }),
+    "数据不足，未判定",
+  );
 });
 
 test("spot gaps cannot interrupt valid futures and gaps reset only their own series", () => {
