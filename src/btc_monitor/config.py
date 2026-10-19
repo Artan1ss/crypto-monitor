@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     hourly_enabled: bool = False
     hourly_telegram_enabled: bool = False
     hourly_source: str = "coinalyze"
+    # Production default replaces legacy pressure alerts; rollback remains explicit.
+    hourly_strategy: str = "sweep"
     hourly_decision_delay_seconds: int = Field(180, ge=30, le=600)
     hourly_context_hours: int = Field(48, ge=30, le=72)
     hourly_flow_hours: int = Field(6, ge=2, le=12)
@@ -91,6 +93,13 @@ class Settings(BaseSettings):
     def validate_hourly_source(cls, value):
         if value not in {"coinalyze", "direct"}:
             raise ValueError("HOURLY_SOURCE must be coinalyze/direct")
+        return value
+
+    @field_validator("hourly_strategy")
+    @classmethod
+    def validate_hourly_strategy(cls, value):
+        if value not in {"sweep", "pressure", "combined"}:
+            raise ValueError("HOURLY_STRATEGY must be sweep/pressure/combined")
         return value
 
     @field_validator("coinalyze_api_key", mode="before")

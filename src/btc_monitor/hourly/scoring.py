@@ -8,6 +8,8 @@ D = Decimal
 
 def confidence(snapshot):
     d, c = snapshot.get("diagnostics", {}), snapshot.get("candidate", {})
+    if c.get("kind") == "sweep_split_cvd":
+        return c["evidence_score"]
     direction = c.get("direction")
     sign = 1 if direction == "LONG" else -1
     ref = d.get("references", {}).get(direction, {})

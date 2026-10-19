@@ -17,6 +17,8 @@ const date = (v) =>
     minute: "2-digit",
     hour12: false,
   }).format(new Date(v));
+const receipt = (v) =>
+  `${date(v)}:${String(new Date(v).getUTCSeconds()).padStart(2, "0")}`;
 const esc = (v) =>
   String(v).replace(
     /[&<>"']/g,
@@ -32,7 +34,11 @@ const state = {
   selected: null,
   offline: false,
   offlineData: null,
+  loading: false,
+  dataError: null,
+  market: null,
 };
+let refreshGeneration = 0;
 const colors = {
   text: "#92a5ba",
   grid: "#243243",
@@ -71,10 +77,27 @@ const delivery = {
   uncertain: "投递结果不确定",
   attempted: "已尝试·结果待核实",
   pending: "待发送",
+  superseded_strategy: "旧策略已替换·未发送",
 };
+const chartNav = new HourlyChartController(
+  $("chart"),
+  draw,
+  filtered,
+  () => state.selected,
+  select,
+);
 async function get(path, options) {
   const r = await fetch(path, options);
-  if (!r.ok) throw Error(`请求失败 ${r.status}`);
+  if (!r.ok) {
+    let message = `请求失败 ${r.status}`;
+    try {
+      const payload = await r.json();
+      if (typeof payload.detail === "string") message = payload.detail;
+    } catch {}
+    const error = Error(message);
+    error.status = r.status;
+    throw error;
+  }
   return r.json();
 }
 function filtered() {
@@ -88,13 +111,30 @@ function filtered() {
 }
 function summary() {
   const h = state.health;
+  const live = !state.offline && state.market;
   $("status").textContent = state.offline
     ? "离线复盘 · 不发通知"
     : h.enabled
       ? h.healthy
         ? "1H 监控运行中"
         : "1H 监控预热 / 数据检查"
-      : "1H 监控未启用";
+      : h.database?.scope === "local_preview"
+        ? "本地数据库只读 · 非云端实时连接"
+        : "1H 监控未启用";
+  if (state.dataError && !state.offline)
+    $("status").textContent = state.dataError;
+  if (live) {
+    const m = live.health;
+    $("status").textContent = m.price_fresh
+      ? `实时价格已连接 · ${m.provider_fresh && m.metrics_complete ? "聚合指标已更新" : "聚合指标缺口／预热／过期"} · 不发TG`
+      : "价格数据已过期／连接中断，非当前实时行情";
+    if (state.dataError)
+      $("status").textContent =
+        "实时读取失败；图中为上次数据：" + state.dataError;
+  }
+  $("live-price").textContent = live
+    ? `${receipt(live.received_at)} · $${fmt(state.bars.at(-1)?.price?.close)}`
+    : "非独立实时行情";
   $("source").textContent =
     (h.source || state.bars[0]?.source || "未知") === "coinalyze"
       ? "Coinalyze · 3 现货 / 3 合约"
@@ -116,12 +156,53 @@ function summary() {
     : "实时样本尚不足";
   const repaired = state.bars.filter((b) => b.review_recovery).length;
   $("notice").textContent =
-    `${state.offline ? "离线文件；无法证明云端当前健康。 " + (state.offlineData?.exported_at ? "快照时间 " + date(state.offlineData.exported_at) + "。 " : "") : ""}1H 收盘后评估；生成箭头≠触发收盘点。${h.source === "direct" ? "固定 7 源直连" : "Coinalyze 固定 6 源，未包含 OKX 现货"}；费率是未统一周期、非 OI 加权的报告均值。${repaired ? ` ${repaired} 个小时使用当时已有单位证据生成只读复盘修正版，历史决策未改。` : ""}${h.last_evaluation?.blocked ? " 当前阻断：" + h.last_evaluation.blocked : ""}${h.replay?.state === "running" ? " · 历史重建中" : ""}`;
+    `${state.offline ? "离线文件；无法证明云端当前健康。 " + (state.offlineData?.exported_at ? "快照时间 " + date(state.offlineData.exported_at) + "。 " : "") : ""}1H 收盘后评估；箭头标在触发K线，生成时间见详情。${h.source === "direct" ? "固定 7 源直连" : "Coinalyze 固定 6 源，未包含 OKX 现货"}；费率是未统一周期、非 OI 加权的报告均值。${repaired ? ` ${repaired} 个小时使用当时已有单位证据生成只读复盘修正版，历史决策未改。` : ""}${h.last_evaluation?.blocked ? " 当前阻断：" + h.last_evaluation.blocked : ""}${h.replay?.state === "running" ? " · 历史重建中" : ""}`;
+  if (live) {
+    const m = live.health;
+    $("notice").textContent =
+      `本机直连：Bybit价格每30秒更新，Coinalyze固定6源已收盘1H指标每120秒刷新。末根半透明K线未收盘，不用于信号。行情不依赖数据库，信号另读本机档案；不会自动同步Railway或发送TG。现货CVD仅在单位核验后显示，费率是未统一周期的非OI加权均值。`;
+    $("notice").textContent +=
+      ` 价格接收：${date(live.received_at)}；指标接收：${m.provider_received_at ? date(m.provider_received_at) : "尚未完成"}；完整指标截至：${m.latest_complete_metrics_end ? date(m.latest_complete_metrics_end) : "尚无完整六源小时"}（多伦多时间）。`;
+    if (!m.provider_fresh || m.provider_error)
+      $("notice").textContent +=
+        ` 聚合指标未就绪／过期：${m.provider_error || "正在读取并核验单位"}，旧值不能当作当前数据。`;
+    if (m.provider_fresh && !m.metrics_complete) {
+      const unknown = (m.selected_feeds || [])
+        .filter((f) => f.volume_unit !== "base")
+        .map((f) => f.feed);
+      $("notice").textContent +=
+        " 聚合指标尚未完整；单位待核验：" +
+        (unknown.join("、") || "请检查最近收盘小时的数据覆盖") +
+        "。";
+    }
+    if (m.storage_error)
+      $("notice").textContent +=
+        " 本地原始数据留存失败，但不影响实时行情显示。";
+    if (live.signal_warning)
+      $("notice").textContent += " " + live.signal_warning;
+  } else if (!state.offline && h.database?.scope === "local_preview")
+    $("notice").textContent =
+      "本机数据库，不会自动同步 Railway；打开界面不启动采集或TG。 " +
+      $("notice").textContent;
+  const lastBar = state.bars.at(-1);
+  if (lastBar && !live) {
+    $("notice").textContent += ` 数据截至 ${date(lastBar.end)}（多伦多时间）。`;
+    if (Date.now() - Date.parse(lastBar.end) > 2 * 3600000)
+      $("notice").textContent += " 数据已过期，仅供历史复盘，非当前实时行情。";
+  }
   if (state.offlineData?.local_verification && state.offline)
     $("notice").textContent +=
       ` 本地新算法验证，尚未部署；${state.offlineData.verified_signal_ids?.length || 0} 条信号使用导出的原始分钟数据复算，其余仍为原导出结果。`;
+  if (state.offlineData?.sweep_research && state.offline)
+    $("notice").textContent =
+      "扫点背离历史验证 · 不发TG · 事后补取的固定六源数据，不证明当时已可用。箭头标在触发K线，详情列出理论评估时刻；方向分与先触及失效分别复盘，非可执行收益。";
   $("online").hidden = !state.offline;
-  $("replay").disabled = state.offline || h.replay?.state === "running";
+  $("replay").disabled =
+    Boolean(live) ||
+    state.offline ||
+    Boolean(state.dataError) ||
+    h.database?.connected === false ||
+    h.replay?.state === "running";
 }
 function cvdSeries(bars, market) {
   let sum = 0,
@@ -140,7 +221,21 @@ function cvdSeries(bars, market) {
   });
 }
 function draw() {
-  const bars = state.bars;
+  const allBars = state.bars;
+  chartNav.sync(
+    allBars,
+    state.offline
+      ? `offline:${state.offlineData?.exported_at}`
+      : state.market
+        ? "live"
+        : "archive",
+  );
+  const [visibleStart, visibleEnd] = chartNav.view.slice();
+  const bars = allBars.slice(visibleStart, visibleEnd);
+  const visibleSignals = filtered().filter((s) =>
+    bars.some((b) => Date.parse(b.start) === Date.parse(s.bar_start)),
+  );
+  chartNav.status(visibleSignals.length);
   if (!bars.length) {
     $("chart").innerHTML =
       '<div class="chart-empty">尚无 1H 特征记录。<br>启用监控后自动生成，或点击“重建历史（不发 TG）”。<br>不会用模拟数据填充真实界面。</div>';
@@ -151,10 +246,23 @@ function draw() {
     right = 110,
     plot = W - left - right,
     H = 790;
-  const t0 = Date.parse(bars[0].start),
-    t1 = Date.parse(bars.at(-1).end) + 3600000;
-  const x = (t) => left + ((Date.parse(t) - t0) / (t1 - t0)) * plot;
-  let svg = `<svg viewBox="0 0 ${W} ${H}" aria-label="BTC 1H 价格及市场指标">`;
+  const indices = new Map(allBars.map((b, i) => [Date.parse(b.start), i]));
+  const x = (t) => {
+    const time = Date.parse(t),
+      floor = Math.floor(time / 3600000) * 3600000;
+    let i = indices.get(floor);
+    if (i === undefined) {
+      i = allBars.findIndex((b) => Date.parse(b.start) >= floor);
+      if (i < 0) i = allBars.length;
+    }
+    return (
+      left +
+      ((i + (time - floor) / 3600000 - chartNav.view.left) /
+        chartNav.view.count) *
+        plot
+    );
+  };
+  let svg = `<svg viewBox="0 0 ${W} ${H}" aria-label="BTC 1H 价格及市场指标"><defs><clipPath id="hourly-plot-clip"><rect x="${left}" y="0" width="${plot}" height="${H}"/></clipPath></defs>`;
   const text = (a, b, s, c = colors.text, size = 11) =>
     `<text x="${a}" y="${b}" fill="${c}" font-size="${size}" font-family="system-ui">${esc(s)}</text>`;
   const panels = [
@@ -167,8 +275,11 @@ function draw() {
   ];
   const cumulative = { spot: [], linear: [] };
   for (const market of ["spot", "linear"])
-    cumulative[market] = cvdSeries(bars, market);
-  const selected = state.signals.find((s) => s.id === state.selected);
+    cumulative[market] = cvdSeries(allBars, market).slice(
+      visibleStart,
+      visibleEnd,
+    );
+  const selected = visibleSignals.find((s) => s.id === state.selected);
   const series = (key) =>
     bars.map((b, i) =>
       key === "volume"
@@ -202,8 +313,8 @@ function draw() {
       max = Math.max(max, 0);
     }
     const span = max - min || Math.max(Math.abs(max) * 0.01, 1);
-    min = key === "volume" ? 0 : min - span * 0.06;
-    max += span * 0.06;
+    min = key === "volume" ? 0 : min - span * (key === "price" ? 0.15 : 0.06);
+    max += span * (key === "price" ? 0.15 : 0.06);
     const y = (v) => top + height - ((v - min) / (max - min)) * height;
     for (let j = 0; j < 3; j++) {
       const val = min + ((max - min) * j) / 2;
@@ -212,36 +323,64 @@ function draw() {
         text(W - right + 10, y(val) + 4, fmt(val, key === "funding" ? 4 : 0));
     }
     if (key === "price") {
+      svg += '<g clip-path="url(#hourly-plot-clip)">';
       bars.forEach((b) => {
         if (!b.price) return;
         const p = b.price,
           up = N(p.close) >= N(p.open),
           c = up ? colors.up : colors.down,
           xx = x(new Date(Date.parse(b.start) + 1800000).toISOString()),
-          bw = Math.max(2, (plot / bars.length) * 0.55);
-        svg += `<path d="M${xx} ${y(N(p.high))}V${y(N(p.low))}" stroke="${c}"/><rect x="${xx - bw / 2}" y="${Math.min(y(N(p.open)), y(N(p.close)))}" width="${bw}" height="${Math.max(1, Math.abs(y(N(p.open)) - y(N(p.close))))}" fill="${c}" opacity="${b.complete ? 1 : 0.35}"/>`;
+          bw = Math.max(0.5, Math.min(18, (plot / chartNav.view.count) * 0.55));
+        svg += `<path d="M${xx} ${y(N(p.high))}V${y(N(p.low))}" stroke="${c}"/><rect x="${xx - bw / 2}" y="${Math.min(y(N(p.open)), y(N(p.close)))}" width="${bw}" height="${Math.max(1, Math.abs(y(N(p.open)) - y(N(p.close))))}" fill="${c}" opacity="${b.closed === undefined ? (b.complete ? 1 : 0.35) : b.closed ? 1 : 0.45}"/>`;
       });
       if (selected) {
-        for (const [v, title, c] of [
-          [N(selected.entry), "参考价", colors.future],
-          [N(selected.invalidation), "失效参考", colors.down],
+        for (const [v, title, c, offset] of [
+          [N(selected.entry), "参考价", colors.future, 0],
+          [N(selected.invalidation), "失效参考", colors.down, 220],
         ])
           svg +=
             `<path d="M${left} ${y(v)}H${W - right}" stroke="${c}" stroke-dasharray="5 4"/>` +
-            text(left + 5, y(v) - 4, `${title} ${fmt(v)}`, c);
+            text(left + 5 + offset, top + 14, `${title} ${fmt(v)}`, c);
+        const ref = selected.snapshot?.candidate?.sweep_diagnostics;
+        if (ref && N(ref.level) !== null) {
+          const from = Math.max(left, x(ref.pivot_start)),
+            to = x(
+              new Date(Date.parse(selected.bar_start) + 1800000).toISOString(),
+            );
+          svg +=
+            `<path data-sweep-level="true" d="M${from} ${y(N(ref.level))}H${to}" stroke="${colors.spot}" stroke-dasharray="3 3"/>` +
+            text(
+              left + 445,
+              top + 14,
+              `被扫结构 ${fmt(ref.level)} · 锚点 ${date(ref.pivot_start)}`,
+              colors.spot,
+            );
+          if (
+            bars.some(
+              (b) => Date.parse(b.start) === Date.parse(ref.pivot_start),
+            )
+          )
+            svg += `<circle data-sweep-anchor="true" cx="${x(new Date(Date.parse(ref.pivot_start) + 1800000).toISOString())}" cy="${y(N(ref.level))}" r="4" fill="${colors.spot}"/>`;
+        }
       }
-      for (const s of filtered()) {
-        const xx = x(s.generated_at),
-          b = bars.find((b) => b.start === s.bar_start);
+      const stacks = new Map();
+      for (const s of visibleSignals) {
+        const xx = x(new Date(Date.parse(s.bar_start) + 1800000).toISOString()),
+          b = bars.find((b) => Date.parse(b.start) === Date.parse(s.bar_start));
         if (!b?.price) continue;
+        const stackKey = s.bar_start + ":" + s.direction,
+          stack = stacks.get(stackKey) || 0;
+        stacks.set(stackKey, stack + 1);
         const c = s.direction === "SHORT" ? colors.down : colors.up,
           yy =
             s.direction === "SHORT"
-              ? y(N(b.price.high)) - 16
-              : y(N(b.price.low)) + 16;
-        svg += `<g data-signal="${esc(s.id)}" tabindex="0" role="button" aria-label="${esc(s.direction + " " + s.tier + " " + date(s.generated_at))}" cursor="pointer"><title>${esc(s.direction + " " + s.tier + " " + date(s.generated_at) + " · " + s.origin)}</title><rect x="${xx - 10}" y="${yy - 12}" width="20" height="24" fill="transparent"/><path d="${s.direction === "SHORT" ? `M${xx - 5} ${yy - 6}H${xx + 5}L${xx} ${yy + 3}Z` : `M${xx - 5} ${yy + 6}H${xx + 5}L${xx} ${yy - 3}Z`}" stroke="${c}" stroke-width="${s.id === state.selected ? 3 : 1.5}" fill="${s.tier === "CONFIRMED" ? c : "none"}"/></g><circle cx="${x(b.end)}" cy="${y(N(b.price.close))}" r="2" fill="${c}" pointer-events="none"/>`;
+              ? y(N(b.price.high)) - 20 - stack * 22
+              : y(N(b.price.low)) + 20 + stack * 22;
+        svg += `<g data-signal="${esc(s.id)}" tabindex="0" role="button" aria-label="${esc(s.direction + " " + s.tier + " " + date(s.generated_at))}" cursor="pointer"><title>${esc(s.direction + " · 触发K线 " + date(s.bar_start) + " · 生成 " + date(s.generated_at) + " · " + s.origin)}</title><rect x="${xx - 12}" y="${yy - 12}" width="24" height="28" rx="4" fill="${s.id === state.selected ? "#26384b" : "transparent"}"/><path d="${s.direction === "SHORT" ? `M ${xx} ${yy + 8} l -7 -9 h 4 v -7 h 6 v 7 h 4 Z` : `M ${xx} ${yy - 8} l -7 9 h 4 v 7 h 6 v -7 h 4 Z`}" stroke="${c}" stroke-width="${s.id === state.selected ? 2 : 1}" fill="${s.tier === "CONFIRMED" ? c : "none"}"/></g>`;
       }
+      svg += "</g>";
     } else {
+      svg += '<g clip-path="url(#hourly-plot-clip)">';
       const vals = series(key),
         c = key === "spot" ? colors.spot : colors.future;
       let path = "";
@@ -249,11 +388,20 @@ function draw() {
         if (v === null) {
           if (["spot", "linear"].includes(key)) {
             const xx = x(bars[i].start),
-              width = plot / bars.length;
-            const label = "缺口 / 单位未确认";
+              width = plot / chartNav.view.count;
+            const label =
+              bars[i].closed === false
+                ? "当前小时尚未收盘"
+                : "缺口 / 单位未确认";
             svg += `<g><title>${esc(date(bars[i].start) + " " + label)}</title><rect x="${xx}" y="${top}" width="${width}" height="${height}" fill="#e6ba6c" opacity=".09"/></g>`;
             if (i === 0 || vals[i - 1] !== null)
-              svg += text(xx + 3, top + 12, "缺口", colors.spot, 10);
+              svg += text(
+                xx + 3,
+                top + 12,
+                bars[i].closed === false ? "未收盘" : "缺口",
+                colors.spot,
+                10,
+              );
           }
           path += " ";
           return;
@@ -262,7 +410,10 @@ function draw() {
           new Date(Date.parse(bars[i].start) + 1800000).toISOString(),
         );
         if (["volume", "funding"].includes(key)) {
-          const w = Math.max(2, (plot / bars.length) * 0.6);
+          const w = Math.max(
+            0.5,
+            Math.min(18, (plot / chartNav.view.count) * 0.6),
+          );
           svg += `<rect x="${xx - w / 2}" y="${Math.min(y(v), y(0))}" width="${w}" height="${Math.max(1, Math.abs(y(v) - y(0)))}" fill="${v >= 0 ? colors.up : colors.down}" opacity=".7"/>`;
         } else {
           const contiguous =
@@ -273,6 +424,7 @@ function draw() {
         }
       });
       svg += `<path d="${path}" stroke="${c}" stroke-width="1.7" fill="none"/>`;
+      svg += "</g>";
     }
   }
   for (let i = 0; i < bars.length; i += Math.max(1, Math.ceil(bars.length / 8)))
@@ -286,22 +438,42 @@ function draw() {
   svg +=
     '<path id="crosshair" stroke="#92a5ba" stroke-dasharray="3 4" opacity=".45"/></svg>';
   $("chart").innerHTML = svg;
+  // Real gaps remain explicit; navigation compresses only the missing time,
+  // never manufactures a candle or joins a CVD path over it.
+  for (let i = 1; i < bars.length; i++) {
+    if (Date.parse(bars[i - 1].end) !== Date.parse(bars[i].start)) {
+      const gap = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path",
+      );
+      gap.setAttribute("d", `M${x(bars[i].start)} 15V765`);
+      gap.setAttribute("stroke", colors.spot);
+      gap.setAttribute("stroke-dasharray", "2 5");
+      gap.setAttribute("pointer-events", "none");
+      $("chart").querySelector("svg").append(gap);
+    }
+  }
   $("chart")
     .querySelectorAll("[data-signal]")
     .forEach((el) => {
       el.addEventListener("click", () => select(el.dataset.signal));
       el.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") select(el.dataset.signal);
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          select(el.dataset.signal);
+        }
       });
     });
   const node = $("chart").querySelector("svg");
   node.addEventListener("mousemove", (e) => {
+    if (chartNav.drag) return;
     const rect = node.getBoundingClientRect(),
       xx = ((e.clientX - rect.left) / rect.width) * W,
-      t = t0 + ((xx - left) / plot) * (t1 - t0),
-      i = Math.floor((t - t0) / 3600000),
-      b = bars.find((v) => Date.parse(v.start) === t0 + i * 3600000);
-    if (!b) return;
+      i = Math.floor(
+        chartNav.view.left + ((xx - left) / plot) * chartNav.view.count,
+      ),
+      b = allBars[i];
+    if (!b || xx < left || xx > W - right) return;
     const p = b.price;
     $("hover").textContent =
       `${date(b.start)} ${p ? "O " + fmt(p.open) + " H " + fmt(p.high) + " L " + fmt(p.low) + " C " + fmt(p.close) : "价格缺失"} | 现货 Δ ${fmt(b.aggregated.spot.delta_btc)} BTC | 合约 Δ ${fmt(b.aggregated.linear.delta_btc)} BTC | ${b.review_recovery ? "只读修正版·历史决策未改" : b.complete ? "完整" : "缺口"}${Object.entries(
@@ -313,7 +485,12 @@ function draw() {
             ` · ${k} ${v.observed_bars}/${v.expected_bars} ${v.quality_reasons?.join(",") || "单位未确认/数据不完整"}`,
         )
         .join("")}`;
-    node.querySelector("#crosshair").setAttribute("d", `M${xx} 12V765`);
+    node
+      .querySelector("#crosshair")
+      .setAttribute(
+        "d",
+        `M${xx} 12V765 M${left} ${((e.clientY - rect.top) / rect.height) * H}H${W - right}`,
+      );
   });
 }
 function outcomeReturn(w) {
@@ -333,12 +510,17 @@ function ledger() {
   for (const s of filtered()) {
     const row = document.createElement("button");
     row.className = "signal-row" + (s.id === state.selected ? " selected" : "");
+    const research24 = s.research_review?.["24"];
+    const researchOutcome = research24
+      ? `收盘参考情景<small>24H方向分 ${fmt(research24.direction_score, 1)}${research24.complete ? "" : " · 未到期/缺口"}</small><small>结构分 ${fmt(research24.structure_score, 0)}（非交易收益）</small>`
+      : null;
     const parts = [
       `${date(s.generated_at)}<small>${s.origin === "live" ? "实时记录" : "历史重建 · 非实时通知"}</small>`,
       `<span class="${s.direction === "SHORT" ? "short" : "long"}">${s.direction} · ${s.tier === "WATCH" ? "观察" : "确认"}</span><small>${esc(s.kind)} · 证据分 ${fmt(s.confidence?.score ?? s.outcomes?.confidence?.score, 0)}</small>`,
       esc(s.reasons.join(" / ")),
       `$${fmt(s.entry)}<small>${esc(delivery[s.delivery_state] || s.delivery_state)}</small>`,
-      `${esc(verdict[s.outcomes?.windows?.["24"]?.verdict] || "追踪中")}<small>24H ${outcomeReturn(s.outcomes?.windows?.["24"])}</small><small>结构分 ${s.outcomes?.windows?.["24"]?.scores?.structure_score == null ? "未确定" : fmt(s.outcomes.windows["24"].scores.structure_score, 0)}</small>`,
+      researchOutcome ||
+        `${esc(verdict[s.outcomes?.windows?.["24"]?.verdict] || "追踪中")}<small>24H ${outcomeReturn(s.outcomes?.windows?.["24"])}</small><small>结构分 ${s.outcomes?.windows?.["24"]?.scores?.structure_score == null ? "未确定" : fmt(s.outcomes.windows["24"].scores.structure_score, 0)}</small>`,
     ];
     for (const p of parts) {
       const span = document.createElement("span");
@@ -351,14 +533,18 @@ function ledger() {
   if (!filtered().length) {
     const p = document.createElement("p");
     p.className = "signal-empty";
-    p.textContent = "该范围没有满足条件的信号。数据不足时不会强行产生提醒。";
+    p.textContent =
+      state.market && !state.offline
+        ? "实时模式仅显示行情，未启动本地信号计算。本机档案没有该范围信号；云端信号不会自动同步到这里。"
+        : "该范围没有满足条件的信号。数据不足时不会强行产生提醒。";
     node.append(p);
   }
 }
-async function select(id) {
+async function select(id, focus = true) {
   state.selected = id;
   let s = state.signals.find((v) => v.id === id);
   if (!s) return;
+  if (focus) chartNav.focusIfOutside(s);
   if (!s.snapshot && !state.offline) {
     try {
       s = await get("/hourly/signals/" + id);
@@ -410,7 +596,7 @@ async function select(id) {
     parts.append(summary);
     for (const component of confidence.components || []) {
       const p = document.createElement("p");
-      p.textContent = `${component.label}：${component.points} / ${component.max}`;
+      p.textContent = `${component.label || component.key}：${component.points} / ${component.max}`;
       parts.append(p);
     }
     node.append(parts);
@@ -448,6 +634,46 @@ async function select(id) {
     row("合约量比", fmt(d.volume_ratio) + "x");
     row("ATR 14H", fmt(d.atr));
   }
+  if (c?.sweep_diagnostics) {
+    const r = c.sweep_diagnostics;
+    row("扫点锚点小时", date(r.pivot_start));
+    row("锚点已确认", date(r.pivot_confirmed_at));
+    row("被扫结构", "$" + fmt(r.level));
+    row("锚点CVD比较长度", r.compared_hours + "H（同一价格锚点收盘）");
+    for (const [market, label] of [
+      ["spot", "现货"],
+      ["linear", "合约"],
+    ]) {
+      row(
+        label + " 锚点→触发 ΔCVD",
+        fmt(r.flows[market].pivot_to_now_delta_btc) + " BTC",
+      );
+      row(
+        label + " 锚点 normalizer",
+        fmt(r.flows[market].normalizer_btc) + " BTC",
+      );
+    }
+  }
+  if (s.research_review) {
+    row("复盘口径", "事后补取数据；收盘参考价情景，非16:03实际成交或TG");
+    for (const [h, r] of Object.entries(s.research_review)) {
+      row(
+        h + "H 方向分 / 结构分",
+        `${fmt(r.direction_score, 1)} / ${fmt(r.structure_score, 0)}`,
+      );
+      row(
+        h + "H 触及顺序",
+        {
+          target_first: "先1R",
+          invalidation_first: "先触及失效",
+          same_hour_ambiguous: "同小时先后不明",
+          neither: "均未触及",
+          pending_or_gap: "未到期或缺口",
+          unknown_due_to_gaps: "缺口前后顺序不明",
+        }[r.touch_order] || r.touch_order,
+      );
+    }
+  }
   const ul = document.createElement("ul");
   for (const reason of s.reasons) {
     const li = document.createElement("li");
@@ -458,7 +684,7 @@ async function select(id) {
   const heading = document.createElement("h3");
   heading.textContent = "后续价格路径 · 非实际交易收益";
   node.append(heading);
-  for (const hours of ["1", "4", "12", "24"]) {
+  for (const hours of s.research_review ? [] : ["1", "4", "12", "24"]) {
     const w = s.outcomes?.windows?.[hours],
       box = document.createElement("div");
     box.className = "outcome";
@@ -583,18 +809,66 @@ async function select(id) {
 }
 async function refresh() {
   if (state.offline) return;
+  const request = ++refreshGeneration;
+  state.loading = true;
   try {
     const h = $("range").value;
+    if ($("datasource").value === "live") {
+      try {
+        const market = await get(`/hourly/market?hours=${h}`, {
+          signal: AbortSignal.timeout(25000),
+        });
+        if (state.offline || request !== refreshGeneration) return;
+        Object.assign(state, { market, bars: market.bars, dataError: null });
+        render();
+        // Signals/DB health must never gate drawing a valid public market response.
+        const results = await Promise.allSettled([
+          get(`/hourly/signals?hours=${h}&limit=500`, {
+            signal: AbortSignal.timeout(4000),
+          }),
+          get("/hourly/health", { signal: AbortSignal.timeout(4000) }),
+        ]);
+        if (state.offline || request !== refreshGeneration) return;
+        if (results[0].status === "fulfilled") state.signals = results[0].value;
+        else
+          market.signal_warning =
+            "信号档案暂不可用；实时行情仍正常。保留的旧信号不代表当前正在发出新信号。";
+        if (results[1].status === "fulfilled") state.health = results[1].value;
+        render();
+        return;
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        if (request !== refreshGeneration) return;
+        $("datasource").value = "archive";
+      }
+    }
     const [bars, signals, health] = await Promise.all([
-      get(`/hourly/bars?hours=${h}`),
-      get(`/hourly/signals?hours=${h}&limit=500`),
-      get("/hourly/health"),
+      get(`/hourly/bars?hours=${h}`, { signal: AbortSignal.timeout(20000) }),
+      get(`/hourly/signals?hours=${h}&limit=500`, {
+        signal: AbortSignal.timeout(20000),
+      }),
+      get("/hourly/health", { signal: AbortSignal.timeout(5000) }),
     ]);
-    if (state.offline) return;
-    Object.assign(state, { bars, signals, health });
+    if (state.offline || request !== refreshGeneration) return;
+    Object.assign(state, {
+      bars,
+      signals,
+      health,
+      dataError: null,
+      market: null,
+    });
     render();
   } catch (e) {
-    if (!state.offline) $("status").textContent = e.message;
+    if (!state.offline && request === refreshGeneration) {
+      state.dataError = e.message;
+      $("status").textContent = e.message;
+      $("notice").textContent =
+        "读取失败；页面中若有旧数据，仅为上次成功加载的结果，非实时更新。可以读取本地快照，或启动 Docker 后重试。";
+      $("replay").disabled = true;
+      if (state.market) state.market.health.price_fresh = false;
+    }
+  } finally {
+    if (request === refreshGeneration) state.loading = false;
   }
 }
 function render() {
@@ -606,7 +880,7 @@ function render() {
   summary();
   draw();
   ledger();
-  if (state.selected) select(state.selected);
+  if (state.selected) select(state.selected, false);
 }
 function applyOfflineRange() {
   const data = state.offlineData;
@@ -624,7 +898,14 @@ for (const id of ["direction", "tier", "origin"])
 $("range").addEventListener("change", () =>
   state.offline ? applyOfflineRange() : refresh(),
 );
-$("refresh").addEventListener("click", refresh);
+$("datasource").addEventListener("change", () => {
+  state.offline = false;
+  state.market = null;
+  state.selected = null;
+  state.signals = [];
+  refresh();
+});
+$("refresh").addEventListener("click", () => refresh());
 $("replay").addEventListener("click", async () => {
   try {
     const hours = Math.max(30, N($("range").value));
@@ -663,26 +944,70 @@ async function readReviewFile(file) {
   }
   return JSON.parse(await new Blob(chunks).text());
 }
+function applyOffline(v) {
+  if (
+    v.schema !== "btc-hourly-review-v1" ||
+    !Array.isArray(v.bars) ||
+    !Array.isArray(v.signals) ||
+    v.bars.length > 168 ||
+    v.signals.length > 500
+  )
+    throw Error("不是有效的 BTC 1H 复盘文件");
+  Object.assign(state, {
+    offlineData: v,
+    health: v.health || {},
+    offline: true,
+    selected: null,
+    dataError: null,
+    market: null,
+  });
+  chartNav.mode = null;
+  refreshGeneration++;
+  state.loading = false;
+  applyOfflineRange();
+  if (v.sweep_research)
+    $("notice").textContent =
+      "扫点背离历史验证 · 不发TG · 事后补取的固定六源数据，不证明当时已可用。箭头标在触发K线，详情列出理论评估时刻；方向分与先触及失效分别复盘，非可执行收益。";
+}
+$("sweep-research").addEventListener("click", async () => {
+  try {
+    $("sweep-research").disabled = true;
+    const v = await get("/hourly/sweep-research");
+    $("range").value = "168";
+    $("origin").value = "ALL";
+    $("direction").value = "ALL";
+    $("tier").value = "ALL";
+    applyOffline(v);
+  } catch (e) {
+    $("status").textContent = e.message;
+  } finally {
+    $("sweep-research").disabled = false;
+  }
+});
+$("local-snapshot").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/hourly/local-snapshot");
+    if (!response.ok) throw Error("无法读取本地快照，请导入已有离线复盘文件");
+    const blob = await response.blob();
+    const v = await readReviewFile({
+      name: "snapshot.json.gz",
+      size: blob.size,
+      stream: () => blob.stream(),
+    });
+    applyOffline(v);
+    // A snapshot contains both live and reconstructed records; start with all records visible.
+    $("origin").value = "ALL";
+    render();
+  } catch (error) {
+    $("status").textContent = error.message;
+  }
+});
 $("import").addEventListener("change", async (e) => {
   try {
     const f = e.target.files[0];
     if (!f) return;
     const v = await readReviewFile(f);
-    if (
-      v.schema !== "btc-hourly-review-v1" ||
-      !Array.isArray(v.bars) ||
-      !Array.isArray(v.signals) ||
-      v.bars.length > 168 ||
-      v.signals.length > 500
-    )
-      throw Error("不是有效的 BTC 1H 复盘文件");
-    Object.assign(state, {
-      offlineData: v,
-      health: v.health || {},
-      offline: true,
-      selected: null,
-    });
-    applyOfflineRange();
+    applyOffline(v);
   } catch (error) {
     $("status").textContent = error.message;
   }
@@ -693,4 +1018,11 @@ $("online").addEventListener("click", () => {
   refresh();
 });
 refresh();
-setInterval(refresh, 30000);
+setInterval(() => {
+  if (!state.loading) refresh();
+}, 30000);
+if (typeof document.addEventListener === "function") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !state.offline) refresh();
+  });
+}

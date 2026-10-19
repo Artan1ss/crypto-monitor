@@ -27,7 +27,7 @@ START = datetime(2026, 10, 11, tzinfo=UTC)
 
 
 def config(**kwargs):
-    return Settings(_env_file=None, telegram_enabled=False, **kwargs)
+    return Settings(_env_file=None, telegram_enabled=False, hourly_strategy="combined", **kwargs)
 
 
 def bars():
@@ -522,6 +522,45 @@ async def test_api_replay_csrf_bounds_and_static_assets():
         assert (await c.post("/hourly/replay", content="{}")).status_code == 415
         assert (await c.post("/hourly/replay", json={})).status_code == 202
         m.request_replay.assert_awaited_once()
+
+
+async def test_database_outage_returns_actionable_503_without_exception_details():
+    repo = SimpleNamespace(
+        bars=AsyncMock(side_effect=ConnectionRefusedError("do-not-expose-password")),
+        alerts=AsyncMock(side_effect=ConnectionRefusedError("do-not-expose-password")),
+    )
+    app = FastAPI()
+    app.include_router(routes(SimpleNamespace(settings=config()), repo))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        for endpoint in ("/hourly/bars", "/hourly/signals"):
+            response = await c.get(endpoint)
+            assert response.status_code == 503
+            assert "Docker" in response.json()["detail"]
+            assert "do-not-expose-password" not in response.text
+
+
+async def test_local_snapshot_is_preview_only_and_health_does_not_claim_cloud(tmp_path):
+    monitor = SimpleNamespace(health=lambda: {"enabled": False, "healthy": False})
+    repo = SimpleNamespace(db=SimpleNamespace(ping=AsyncMock(return_value=False)))
+    app = FastAPI()
+    app.include_router(routes(monitor, repo))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        assert (await c.get("/hourly/local-snapshot")).status_code == 404
+    (tmp_path / "h1-review-20261016-scores-live-cloud.json.gz").write_bytes(b"saved-cloud-snapshot")
+    (tmp_path / "private.env").write_bytes(b"must-not-be-served")
+    app = FastAPI()
+    app.include_router(routes(monitor, repo, local_reports=tmp_path))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        assert (await c.get("/hourly/local-snapshot")).content == b"saved-cloud-snapshot"
+        health = (await c.get("/hourly/health")).json()
+        assert health["database"] == {"scope": "local_preview", "connected": False}
+        assert health["healthy"] is False
 
 
 async def test_signal_detail_and_raw_export_support_uuid_decimal_and_time():

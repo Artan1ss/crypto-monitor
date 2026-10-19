@@ -124,7 +124,10 @@ class HourlyRepository:
                 .returning(HourlyAlertRecord.id)
             )
 
-    async def cooling_down(self, source, bar_start, direction, tier, hours):
+    async def cooling_down(self, source, bar_start, direction, tier, hours, kind=None):
+        kind_filter = (
+            [HourlyAlertRecord.snapshot["candidate"]["kind"].astext == kind] if kind else []
+        )
         async with self.db.session() as session:
             return (
                 await session.scalar(
@@ -139,6 +142,7 @@ class HourlyRepository:
                         HourlyAlertRecord.delivery_state.in_(
                             ["pending", "attempted", "sent", "uncertain"]
                         ),
+                        *kind_filter,
                     )
                     .limit(1)
                 )

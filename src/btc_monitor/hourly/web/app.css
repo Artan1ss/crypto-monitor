@@ -160,7 +160,36 @@ main {
   width: 100%;
   display: block;
   background: var(--panel);
-  touch-action: pan-y;
+  touch-action: none;
+}
+#chart {
+  touch-action: none;
+  cursor: crosshair;
+  user-select: none;
+}
+#chart:focus-visible {
+  outline: 1px solid var(--accent);
+}
+.chart-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 6px;
+  margin: 12px 0;
+}
+.chart-tools input {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--stroke);
+  padding: 7px;
+  border-radius: 4px;
+}
+.chart-scroll-label {
+  margin-top: 8px;
+}
+#chart-scroll {
+  width: 100%;
+  accent-color: var(--accent);
 }
 .chart-empty {
   padding: 80px 30px;

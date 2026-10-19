@@ -5,14 +5,22 @@ from decimal import Decimal
 from statistics import median
 
 from btc_monitor.archive.types import serializable
+from btc_monitor.hourly.sweep import PARAMETERS as SWEEP_PARAMETERS
+from btc_monitor.hourly.sweep import evaluate_sweep
 
 D = Decimal
-VERSION = "h1-pressure-v1.1"
+VERSION = "h1-pressure-sweep-v1.2"
 
 
 def parameters(settings):
     return {
-        "version": VERSION,
+        "version": SWEEP_PARAMETERS["version"] if settings.hourly_strategy == "sweep" else VERSION,
+        "hourly_strategy": settings.hourly_strategy,
+        "active_signal_kinds": ["sweep_split_cvd"]
+        if settings.hourly_strategy == "sweep"
+        else ["pressure"]
+        if settings.hourly_strategy == "pressure"
+        else ["pressure", "sweep_split_cvd"],
         "flow_hours": settings.hourly_flow_hours,
         "pressure_threshold": settings.hourly_pressure_threshold,
         "price_move_atr": settings.hourly_price_move_atr,
@@ -23,10 +31,34 @@ def parameters(settings):
         "atr_hours": 14,
         "decision_delay_seconds": settings.hourly_decision_delay_seconds,
         "volume_baseline": "median of prior 20 closed hours",
+        "sweep_split_cvd": SWEEP_PARAMETERS,
     }
 
 
 def evaluate(history, settings):
+    result = _pressure_evaluate(history, settings)
+    if settings.hourly_strategy == "pressure":
+        return result
+    sweep = evaluate_sweep(history)
+    result["diagnostics"]["sweep_split_cvd"] = sweep
+    if settings.hourly_strategy == "sweep":
+        result.update(
+            version=sweep["version"], candidates=sweep["candidates"], blocked=sweep["blocked"]
+        )
+        return result
+    # A sweep confirmation supersedes an older pressure candidate in the same
+    # direction; one hour must not create two notifications for the same setup.
+    for candidate in sweep["candidates"]:
+        result["candidates"] = [
+            c for c in result["candidates"] if c["direction"] != candidate["direction"]
+        ]
+        result["candidates"].append(candidate)
+    if sweep["candidates"]:
+        result["blocked"] = None
+    return result
+
+
+def _pressure_evaluate(history, settings):
     """history includes the current bar, ordered, immutable availability-time features."""
     result = {"version": VERSION, "candidates": [], "diagnostics": {}, "blocked": None}
     if len(history) < 25:

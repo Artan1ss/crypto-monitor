@@ -16,6 +16,12 @@
     </header>
     <nav aria-label="研究控制">
       <label
+        >数据来源<select id="datasource">
+          <option value="live" selected>实时行情 · 本机直连</option>
+          <option value="archive">本机信号与数据库归档</option>
+        </select></label
+      >
+      <label
         >时间范围<select id="range">
           <option value="24">最近 24 小时</option>
           <option value="72" selected>最近 3 天</option>
@@ -41,6 +47,8 @@
         </select></label
       ><button id="refresh">刷新</button
       ><button id="replay">重建历史（不发 TG）</button
+      ><button id="local-snapshot">读取本地快照（非实时）</button
+      ><button id="sweep-research">扫点背离验证（不发 TG）</button
       ><label class="file-button"
         >导入离线复盘<input
           id="import"
@@ -50,9 +58,12 @@
     </nav>
     <p id="notice" class="notice">
       1H
-      收盘评估；箭头对应实际生成时刻，圆点对应触发小时收盘。观察与确认都不是交易指令。
+      收盘评估；箭头标在触发K线上，详情保留生成时间。观察与确认都不是交易指令。
     </p>
     <section class="summary" aria-label="运行概况">
+      <div>
+        <small>实时接收 / 当前价</small><strong id="live-price">—</strong>
+      </div>
       <div><small>数据集合</small><strong id="source">—</strong></div>
       <div>
         <small>完整小时 / 当前范围</small><strong id="coverage">—</strong>
@@ -71,16 +82,43 @@
         <div class="legend">
           <span class="short">↓ SHORT</span><span class="long">↑ LONG</span
           ><span>空心：观察 / 实心：确认</span
+          ><span>箭头标在触发K线，生成时间见详情</span
           ><span>虚线：选中信号失效参考</span>
         </div>
+        <div class="chart-tools" aria-label="K线导航">
+          <button id="chart-zoom-in" aria-label="放大K线">＋</button>
+          <button id="chart-zoom-out" aria-label="缩小K线">−</button>
+          <button id="chart-all">全部已加载</button>
+          <button id="chart-latest">最新K线</button>
+          <button id="chart-focus">定位选中信号与锚点</button>
+          <button id="chart-prev">上一信号</button>
+          <button id="chart-next">下一信号</button>
+          <label>定位日期 · UTC<input type="date" id="chart-date" /></label>
+          <button id="chart-jump">跳转</button>
+        </div>
+        <p id="chart-range" class="muted" role="status">等待加载K线</p>
+        <p class="muted">
+          拖动平移 · 滚轮缩放 · 左右键浏览 ·
+          双击回到最新；六面板同步，缩放不改变CVD累计口径。
+        </p>
         <div id="hover" class="hover">
           移动到图表查看同一小时指标，点击箭头打开信号
         </div>
         <div
           id="chart"
+          tabindex="0"
           role="region"
           aria-label="价格、成交量、CVD、OI和费率对齐图表"
         ></div>
+        <label class="chart-scroll-label"
+          >浏览已加载历史<input
+            id="chart-scroll"
+            type="range"
+            min="0"
+            max="1000"
+            value="1000"
+            step="1"
+        /></label>
       </section>
       <aside id="detail">
         <h2>信号证据</h2>
@@ -97,12 +135,15 @@
       <div id="signals" class="signal-list"></div>
     </section>
     <footer>
-      固定市场集合，不等同全市场。CVD 以可见连续段归零，缺口不插值；OI
+      固定市场集合，不等同全市场。CVD
+      以已加载连续段累计，拖动缩放不重新归零，缺口不插值；OI
       不能推断多空仓位。数据：交易所公开行情 /
       <a href="https://coinalyze.net/" target="_blank" rel="noreferrer"
         >Coinalyze</a
       >。结果是观察性方向验证，不是实际盈亏。
     </footer>
+    <script src="/dashboard/assets/viewport.js" defer></script>
+    <script src="/dashboard/assets/chart.js" defer></script>
     <script src="/dashboard/assets/app.js" defer></script>
   </body>
 </html>

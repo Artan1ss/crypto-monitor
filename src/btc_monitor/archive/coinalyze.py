@@ -290,9 +290,13 @@ class CoinalyzeSource:
             {"provider": "coinalyze", **self.catalog(), "calibration": self.calibration},
         )
 
-    async def calibrate(self, rest: PublicRest):
+    async def calibrate(self, rest: PublicRest, *, reference_lag_minutes=10):
         """Reject unit inference unless overlapping closed bars independently agree."""
-        end = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=10)
+        if reference_lag_minutes not in {10, 30, 60}:
+            raise ValueError("Unsupported closed reference lag")
+        end = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(
+            minutes=reference_lag_minutes
+        )
         start = end - timedelta(minutes=5)
         self.apply_verifications()
         self.last_calibration_at = datetime.now(UTC)

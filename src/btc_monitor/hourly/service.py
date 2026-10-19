@@ -28,6 +28,26 @@ def hour(time):
 def render_alert(row):
     snapshot = row.snapshot
     d, c = snapshot["diagnostics"], snapshot["candidate"]
+    flow_hours = snapshot["parameters"]["flow_hours"]
+    anchor_text = ""
+    if c.get("kind") == "sweep_split_cvd":
+        ref = c["sweep_diagnostics"]
+        latest = snapshot["history"][-1]
+        d = {
+            "oi_change_pct": latest.get("oi_change_pct"),
+            "funding_fraction_mean": latest.get("funding_fraction_mean"),
+            "volume_ratio": ref.get("volume_ratio"),
+            "spot_delta_btc": ref["flows"]["spot"]["pivot_to_now_delta_btc"],
+            "futures_delta_btc": ref["flows"]["linear"]["pivot_to_now_delta_btc"],
+            "spot_pressure": ref["flows"]["spot"]["pressure"],
+        }
+        flow_hours = ref["compared_hours"]
+        anchor_text = (
+            "独立1H扫点收回 / 现货-合约CVD分裂背离\n"
+            f"摆动锚点（UTC）：{html.escape(ref['pivot_start'])}\n"
+            f"被扫结构：${Decimal(ref['level']):,.2f}\n"
+            "CVD取样：同一价格摆动小时收盘→触发小时收盘；不是影线瞬间\n"
+        )
     local = row.generated_at.astimezone(ZoneInfo("America/Toronto")).strftime("%m-%d %H:%M %Z")
     label = "观察 / WATCH" if row.tier == "WATCH" else "价格确认 / CONFIRMED"
     oi = "缺失" if d["oi_change_pct"] is None else f"{Decimal(d['oi_change_pct']):+.2f}%"
@@ -45,7 +65,7 @@ def render_alert(row):
         f"类型：{html.escape(c['kind'])}\n参考价：${row.entry:,.2f}\n"
         f"结构失效参考：${row.invalidation:,.2f}\n"
         f"证据置信分：{score_label}（规则分，非胜率）\n"
-        f"现货 {snapshot['parameters']['flow_hours']}H ΔCVD："
+        f"{anchor_text}现货 {flow_hours}H ΔCVD："
         f"{Decimal(d['spot_delta_btc']):+.2f} BTC\n"
         f"合约 ΔCVD：{Decimal(d['futures_delta_btc']):+.2f} BTC\n"
         f"现货主动压力：{Decimal(d['spot_pressure']) * 100:+.2f}%\n"
@@ -79,6 +99,12 @@ class HourlyMonitor:
 
     async def start(self):
         if self.settings.hourly_enabled:
+            log.info(
+                "hourly_strategy_started",
+                parameters=parameters(self.settings),
+                telegram_enabled=self.settings.hourly_telegram_enabled,
+                legacy_delivery_allowed=self.settings.hourly_strategy != "sweep",
+            )
             self.task = asyncio.create_task(self._loop(), name="hourly-monitor")
 
     def health(self):
@@ -118,6 +144,12 @@ class HourlyMonitor:
                                 lease=lease,
                             )
                             self.bootstrap_done = True
+                            log.info(
+                                "hourly_monitor_bootstrap_complete",
+                                strategy=self.settings.hourly_strategy,
+                                last_evaluation=serializable(self.last_evaluation),
+                                historical_notifications=False,
+                            )
                         else:
                             await self.process(last_end - timedelta(hours=1), now, True, lease)
                         await self.deliver_outbox(datetime.now(UTC), lease)
@@ -146,7 +178,7 @@ class HourlyMonitor:
                 rows = list({r["id"]: r for r in rows + metadata}.values())
             bar = build_hour(rows, start, decision, source)
             await self.repo.save_bar(bar)
-        history = await self.repo.bars(source, start - timedelta(hours=24), end)
+        history = await self.repo.bars(source, start - timedelta(hours=167), end)
         analysis = evaluate(history, self.settings)
         self.last_evaluation = {
             "bar_start": start,
@@ -181,6 +213,7 @@ class HourlyMonitor:
                 candidate["direction"],
                 candidate["tier"],
                 self.settings.hourly_cooldown_hours,
+                kind="sweep_split_cvd" if self.settings.hourly_strategy == "sweep" else None,
             ):
                 state = "suppressed_cooldown"
             alert_id = uuid4()
@@ -227,6 +260,13 @@ class HourlyMonitor:
         if not self.settings.hourly_telegram_enabled:
             return
         for alert in await self.repo.pending_deliveries():
+            # A deploy must not drain a legacy queue into the replacement strategy.
+            if (
+                self.settings.hourly_strategy == "sweep"
+                and alert.snapshot.get("candidate", {}).get("kind") != "sweep_split_cvd"
+            ):
+                await self.repo.set_delivery(alert.id, "superseded_strategy", expected="pending")
+                continue
             if now - alert.generated_at > timedelta(minutes=10):
                 await self.repo.set_delivery(alert.id, "stale_delivery", expected="pending")
                 continue

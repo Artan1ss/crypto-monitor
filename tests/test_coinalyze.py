@@ -261,7 +261,10 @@ async def test_backfill_bounded_pagination_and_alignment():
 
 
 @pytest.mark.parametrize("mismatch", [False, True])
-async def test_spot_calibration_requires_multiple_exact_time_volume_matches(monkeypatch, mismatch):
+@pytest.mark.parametrize("lag", [10, 30])
+async def test_spot_calibration_requires_multiple_exact_time_volume_matches(
+    monkeypatch, mismatch, lag
+):
     from btc_monitor.archive.coinalyze import HistoryLoader
 
     source = CoinalyzeSource(config(), SimpleNamespace())
@@ -289,7 +292,7 @@ async def test_spot_calibration_requires_multiple_exact_time_volume_matches(monk
 
     source.observations = provider
     monkeypatch.setattr(HistoryLoader, "prices_and_flow", reference)
-    await source.calibrate(SimpleNamespace())
+    await source.calibrate(SimpleNamespace(), reference_lag_minutes=lag)
     assert source.markets[0].volume_unit == ("unknown" if mismatch else "base")
     assert source.calibration[SPOT.key]["verified"] is not mismatch
 
