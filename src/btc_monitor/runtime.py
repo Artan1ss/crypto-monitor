@@ -40,7 +40,8 @@ class MonitorRuntime:
         self.repository = repository
         self.rest = BybitRestClient(settings.bybit_rest_url)
         self.telegram = TelegramClient(
-            settings.telegram_enabled, settings.telegram_bot_token, settings.telegram_chat_id
+            settings.telegram_enabled and settings.five_minute_telegram_enabled,
+            settings.telegram_bot_token, settings.telegram_chat_id
         )
         self.flow = FlowAggregator(settings.symbol, repository)
         self.orderbook = LocalOrderBook()
@@ -341,6 +342,8 @@ class MonitorRuntime:
                     continue
                 self.consumed.add(key)
                 self.last_signal_at = signal.timestamp
+                if not self.settings.five_minute_telegram_enabled:
+                    continue  # Persist and track 5m signals, but never send them to TG.
                 try:
                     message_id = await self.telegram.send(render_signal(signal))
                     if message_id:
@@ -567,6 +570,8 @@ class MonitorRuntime:
             "status": self.status.value,
             "healthy": healthy,
             "strategy_version": "v1",
+            "five_minute_telegram_enabled": self.settings.telegram_enabled and self.settings.five_minute_telegram_enabled,
+            "five_minute_recording_enabled": True,
             "started_at": self.started_at,
             "last_finalized_candle_at": self.last_candle_at,
             "last_signal_at": self.last_signal_at,

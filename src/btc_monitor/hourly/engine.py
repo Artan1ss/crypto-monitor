@@ -7,6 +7,8 @@ from statistics import median
 from btc_monitor.archive.types import serializable
 from btc_monitor.hourly.sweep import PARAMETERS as SWEEP_PARAMETERS
 from btc_monitor.hourly.sweep import evaluate_sweep
+from btc_monitor.hourly.sweep_v5 import PARAMETERS as V5_PARAMETERS
+from btc_monitor.hourly.sweep_live import evaluate_v5
 
 D = Decimal
 VERSION = "h1-pressure-sweep-v1.2"
@@ -14,9 +16,11 @@ VERSION = "h1-pressure-sweep-v1.2"
 
 def parameters(settings):
     return {
-        "version": SWEEP_PARAMETERS["version"] if settings.hourly_strategy == "sweep" else VERSION,
+        "version": V5_PARAMETERS["version"] if settings.hourly_strategy == "sweep_v5" else SWEEP_PARAMETERS["version"] if settings.hourly_strategy == "sweep" else VERSION,
         "hourly_strategy": settings.hourly_strategy,
-        "active_signal_kinds": ["sweep_split_cvd"]
+        "active_signal_kinds": ["v1_cvd_transition_sweep_v5"]
+        if settings.hourly_strategy == "sweep_v5"
+        else ["sweep_split_cvd"]
         if settings.hourly_strategy == "sweep"
         else ["pressure"]
         if settings.hourly_strategy == "pressure"
@@ -32,10 +36,13 @@ def parameters(settings):
         "decision_delay_seconds": settings.hourly_decision_delay_seconds,
         "volume_baseline": "median of prior 20 closed hours",
         "sweep_split_cvd": SWEEP_PARAMETERS,
+        "sweep_v5": V5_PARAMETERS,
     }
 
 
 def evaluate(history, settings):
+    if settings.hourly_strategy == "sweep_v5":
+        return evaluate_v5(history)
     result = _pressure_evaluate(history, settings)
     if settings.hourly_strategy == "pressure":
         return result

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     symbol: str = "BTCUSDT"
 
     telegram_enabled: bool = False
+    five_minute_telegram_enabled: bool = True
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     send_startup_message: bool = False
@@ -98,8 +99,8 @@ class Settings(BaseSettings):
     @field_validator("hourly_strategy")
     @classmethod
     def validate_hourly_strategy(cls, value):
-        if value not in {"sweep", "pressure", "combined"}:
-            raise ValueError("HOURLY_STRATEGY must be sweep/pressure/combined")
+        if value not in {"sweep", "pressure", "combined", "sweep_v5"}:
+            raise ValueError("HOURLY_STRATEGY must be sweep/pressure/combined/sweep_v5")
         return value
 
     @field_validator("coinalyze_api_key", mode="before")

@@ -30,7 +30,7 @@ def render_alert(row):
     d, c = snapshot["diagnostics"], snapshot["candidate"]
     flow_hours = snapshot["parameters"]["flow_hours"]
     anchor_text = ""
-    if c.get("kind") == "sweep_split_cvd":
+    if c.get("kind") in {"sweep_split_cvd", "v1_cvd_transition_sweep_v5"}:
         ref = c["sweep_diagnostics"]
         latest = snapshot["history"][-1]
         d = {
@@ -48,6 +48,20 @@ def render_alert(row):
             f"被扫结构：${Decimal(ref['level']):,.2f}\n"
             "CVD取样：同一价格摆动小时收盘→触发小时收盘；不是影线瞬间\n"
         )
+        if c.get("morphology"):
+            morph = c["morphology"]
+            transition = morph["cvd_transition"]
+            state = "合约转向信号方向（背离兑现）" if transition["futures_state"] == "rotated_toward_signal" else "现货/合约分化保持"
+            anchor_text += (
+                "版本：V5 · 必须下一根价格反向确认\n"
+                f"扫点小时（UTC）：{html.escape(morph['sweep_start'])}\n"
+                f"确认小时（UTC）：{html.escape(morph['confirmation_start'])}\n"
+                f"CVD确认：{state}\n"
+                "以下锚点ΔCVD为原扫点收盘值；确认值另列：\n"
+                f"确认累计现货/合约：{Decimal(morph['confirmation_flow_delta_btc']['spot']):+.2f} / "
+                f"{Decimal(morph['confirmation_flow_delta_btc']['linear']):+.2f} BTC\n"
+                "证据分沿用扫点时V1规则分，不代表V5胜率。\n"
+            )
     local = row.generated_at.astimezone(ZoneInfo("America/Toronto")).strftime("%m-%d %H:%M %Z")
     label = "观察 / WATCH" if row.tier == "WATCH" else "价格确认 / CONFIRMED"
     oi = "缺失" if d["oi_change_pct"] is None else f"{Decimal(d['oi_change_pct']):+.2f}%"
@@ -103,7 +117,7 @@ class HourlyMonitor:
                 "hourly_strategy_started",
                 parameters=parameters(self.settings),
                 telegram_enabled=self.settings.hourly_telegram_enabled,
-                legacy_delivery_allowed=self.settings.hourly_strategy != "sweep",
+                legacy_delivery_allowed=self.settings.hourly_strategy not in {"sweep", "sweep_v5"},
             )
             self.task = asyncio.create_task(self._loop(), name="hourly-monitor")
 
@@ -178,7 +192,7 @@ class HourlyMonitor:
                 rows = list({r["id"]: r for r in rows + metadata}.values())
             bar = build_hour(rows, start, decision, source)
             await self.repo.save_bar(bar)
-        history = await self.repo.bars(source, start - timedelta(hours=167), end)
+        history = await self.repo.bars(source, start - timedelta(hours=168 if self.settings.hourly_strategy == "sweep_v5" else 167), end)
         analysis = evaluate(history, self.settings)
         self.last_evaluation = {
             "bar_start": start,
@@ -199,6 +213,8 @@ class HourlyMonitor:
             )
             if live and observed is None:
                 state = "missing_fresh_entry"
+            if live and self.settings.hourly_strategy == "sweep_v5" and now - decision > timedelta(minutes=10):
+                state = "stale_delivery"
             if live and (
                 (candidate["direction"] == "LONG" and entry <= Decimal(candidate["invalidation"]))
                 or (
@@ -213,7 +229,7 @@ class HourlyMonitor:
                 candidate["direction"],
                 candidate["tier"],
                 self.settings.hourly_cooldown_hours,
-                kind="sweep_split_cvd" if self.settings.hourly_strategy == "sweep" else None,
+                kind="v1_cvd_transition_sweep_v5" if self.settings.hourly_strategy == "sweep_v5" else "sweep_split_cvd" if self.settings.hourly_strategy == "sweep" else None,
             ):
                 state = "suppressed_cooldown"
             alert_id = uuid4()
@@ -262,8 +278,8 @@ class HourlyMonitor:
         for alert in await self.repo.pending_deliveries():
             # A deploy must not drain a legacy queue into the replacement strategy.
             if (
-                self.settings.hourly_strategy == "sweep"
-                and alert.snapshot.get("candidate", {}).get("kind") != "sweep_split_cvd"
+                self.settings.hourly_strategy in {"sweep", "sweep_v5"}
+                and alert.snapshot.get("candidate", {}).get("kind") != ("v1_cvd_transition_sweep_v5" if self.settings.hourly_strategy == "sweep_v5" else "sweep_split_cvd")
             ):
                 await self.repo.set_delivery(alert.id, "superseded_strategy", expected="pending")
                 continue
