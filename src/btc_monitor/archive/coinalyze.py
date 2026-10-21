@@ -17,7 +17,7 @@ from btc_monitor.archive.history import HistoryLoader, validate_range
 from btc_monitor.archive.types import Instrument, Observation, decimal, utc
 from btc_monitor.archive.units import UNIT_RECHECK_AFTER, proof_valid, unit_proofs
 
-INTERVALS = {"1min": 60, "5min": 300, "1hour": 3600, "4hour": 14400, "daily": 86400}
+INTERVALS = {"1min": 60, "5min": 300, "15min": 900, "1hour": 3600, "4hour": 14400, "daily": 86400}
 ENDPOINTS = {
     "exchanges",
     "spot-markets",

@@ -17,6 +17,9 @@ from btc_monitor.hourly.service import HourlyMonitor
 from btc_monitor.logging import configure_logging
 from btc_monitor.repository import Repository
 from btc_monitor.runtime import MonitorRuntime
+from btc_monitor.squeeze.repository import SqueezeRepository
+from btc_monitor.squeeze.service import SqueezeMonitor
+from btc_monitor.archive.types import serializable
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -24,7 +27,9 @@ database = Database(settings.database_url)
 repository = Repository(database)
 runtime = MonitorRuntime(settings, repository)
 archive_store = ArchiveStore(database)
-archive_runtime = ResearchCollector(settings, archive_store)
+squeeze_repository = SqueezeRepository(database)
+squeeze_runtime = SqueezeMonitor(settings, squeeze_repository, archive_store)
+archive_runtime = ResearchCollector(settings, archive_store, squeeze_monitor=squeeze_runtime)
 hourly_repository = HourlyRepository(database)
 hourly_runtime = HourlyMonitor(settings, hourly_repository)
 
@@ -46,6 +51,7 @@ async def lifespan(_: FastAPI):
             try:
                 await runtime.stop()
             finally:
+                await squeeze_runtime.stop()
                 await database.close()
 
 
@@ -62,6 +68,7 @@ async def root() -> dict[str, str]:
 @app.get("/health")
 async def health(response: Response) -> dict:
     payload = runtime.health(await database.ping())
+    payload["squeeze"] = squeeze_runtime.health()
     if not payload["healthy"]:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return payload
@@ -119,6 +126,34 @@ async def signals(limit: int = Query(20, ge=1, le=100)) -> list[dict]:
 @app.get("/archive/health")
 async def archive_health() -> dict:
     return archive_runtime.health()
+
+
+@app.get("/squeeze/health")
+async def squeeze_health():
+    return {**squeeze_runtime.health(),"delivery_counts":await squeeze_repository.counts()}
+
+
+@app.get("/squeeze/signals")
+async def squeeze_signals(limit: int = Query(100,ge=1,le=500)):
+    rows=await squeeze_repository.alerts(limit)
+    return serializable([{"id":r.id,"event_key":r.event_key,"generated_at":r.generated_at,
+        "bar_start":r.bar_start,"direction":r.direction,"phase":r.phase,"origin":r.origin,
+        "delivery_state":r.delivery_state,"delivery_id":r.delivery_id,"delivery_at":r.delivery_at,
+        "confidence":r.payload["confidence"],"divergence_type":r.payload["divergence_type"]} for r in rows])
+
+
+@app.get("/squeeze/signals/{identity}/export")
+async def squeeze_export(identity: UUID):
+    row=await squeeze_repository.alert(identity)
+    if row is None:
+        raise HTTPException(404,"Squeeze signal not found")
+    inputs=set(row.payload["snapshot"].get("raw_input_fingerprints",[]))
+    metadata=row.payload["snapshot"].get("unit_metadata_fingerprint")
+    if metadata:
+        inputs.add(metadata)
+    return serializable({"id":row.id,"event_key":row.event_key,"payload":row.payload,
+        "delivery_state":row.delivery_state,"delivery_id":row.delivery_id,"delivery_at":row.delivery_at,
+        "raw_inputs":await squeeze_repository.raw(sorted(inputs))})
 
 
 @app.get("/archive/coverage")

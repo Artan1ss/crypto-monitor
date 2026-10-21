@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     hourly_level_tolerance_atr: float = Field(0.25, gt=0, le=1)
     hourly_cooldown_hours: int = Field(4, ge=1, le=24)
     dashboard_password: SecretStr | None = Field(None, repr=False, exclude=True)
+    squeeze_enabled: bool = False
+    squeeze_telegram_enabled: bool = False
+    squeeze_decision_delay_seconds: int = Field(180, ge=60, le=600)
+    squeeze_max_delivery_age_seconds: int = Field(600, ge=60, le=900)
 
     @field_validator("hourly_source")
     @classmethod
@@ -155,6 +159,10 @@ class Settings(BaseSettings):
             raise ValueError("COINALYZE_ENABLED requires ARCHIVE_ENABLED")
         if self.hourly_telegram_enabled and not (self.hourly_enabled and self.telegram_enabled):
             raise ValueError("HOURLY_TELEGRAM_ENABLED requires HOURLY_ENABLED and TELEGRAM_ENABLED")
+        if self.squeeze_enabled and not (self.archive_enabled and self.coinalyze_enabled):
+            raise ValueError("SQUEEZE_ENABLED requires ARCHIVE_ENABLED and COINALYZE_ENABLED")
+        if self.squeeze_telegram_enabled and not (self.squeeze_enabled and self.telegram_enabled):
+            raise ValueError("SQUEEZE_TELEGRAM_ENABLED requires SQUEEZE_ENABLED and TELEGRAM_ENABLED")
 
 
 @lru_cache

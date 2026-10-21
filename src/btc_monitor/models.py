@@ -21,6 +21,28 @@ from sqlalchemy.orm import Mapped, mapped_column
 from btc_monitor.db import Base
 
 
+class SqueezeRuntimeRecord(Base):
+    __tablename__ = "squeeze_runtime"
+    version: Mapped[str] = mapped_column(String(80), primary_key=True)
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class SqueezeAlertRecord(Base):
+    __tablename__ = "squeeze_alerts"
+    __table_args__ = (UniqueConstraint("event_key"), Index("ix_squeeze_generated", "generated_at"))
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    event_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    bar_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    direction: Mapped[str] = mapped_column(String(16), nullable=False)
+    phase: Mapped[str] = mapped_column(String(16), nullable=False)
+    origin: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    delivery_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    delivery_id: Mapped[str | None] = mapped_column(String(64))
+    delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class HourlyBarRecord(Base):
     __tablename__ = "hourly_bars"
     __table_args__ = (UniqueConstraint("source", "start"),)

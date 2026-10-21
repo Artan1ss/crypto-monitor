@@ -21,8 +21,9 @@ log = structlog.get_logger()
 class ResearchCollector:
     """Seven independent public feeds; no strategy calls or Telegram messages."""
 
-    def __init__(self, settings, store: ArchiveStore):
+    def __init__(self, settings, store: ArchiveStore, squeeze_monitor=None):
         self.settings, self.store = settings, store
+        self.squeeze_monitor = squeeze_monitor
         self.session = str(uuid4())
         self.rest = PublicRest(settings)
         self.captures = {
@@ -261,6 +262,8 @@ class ResearchCollector:
                 state["series"] = series
                 state["last_success_at"] = datetime.now(UTC)
                 state["last_error"] = None
+                if self.squeeze_monitor is not None:
+                    await self.squeeze_monitor.collect(source)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
